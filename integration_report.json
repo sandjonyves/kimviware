@@ -1,0 +1,32 @@
+{
+    "timestamp": "2026-03-26 06:45:51",
+    "status": "PASSED",
+    "services": {
+        "python": {
+            "port": 8000,
+            "status": "OK"
+        },
+        "java": {
+            "port": 8081,
+            "status": "OK"
+        },
+        "c": {
+            "port": 8082,
+            "status": "OK"
+        }
+    },
+    "scenarios": [
+        {
+            "name": "Inscription Python -> Connexion Java",
+            "result": "SUCCESS"
+        },
+        {
+            "name": "Validation Session C",
+            "result": "SUCCESS"
+        }
+    ],
+    "metrics": {
+        "api_compatibility": 1.0,
+        "interoperability": true
+    }
+}

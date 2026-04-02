@@ -1,0 +1,32 @@
+
+services:
+  auth-python:
+    build:
+      context: ../KIMVIEware-System-kimvieware-sut-timetables/auth-service
+      dockerfile: ../../integration-env/Dockerfile.python
+    ports:
+      - "8000:8000"
+    networks:
+      - kimvie-net
+
+  auth-java:
+    build:
+      context: ../KIMVIEware-System-kimvieware-sut-timetables/auth-service-java
+      dockerfile: ../../integration-env/Dockerfile.java
+    ports:
+      - "8081:8081"
+    networks:
+      - kimvie-net
+
+  auth-c:
+    build:
+      context: ../KIMVIEware-System-kimvieware-sut-timetables/auth-service-c
+      dockerfile: ../../integration-env/Dockerfile.c
+    ports:
+      - "8082:8082"
+    networks:
+      - kimvie-net
+
+networks:
+  kimvie-net:
+    driver: bridge
