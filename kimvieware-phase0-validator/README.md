@@ -29,7 +29,7 @@ This service is the first phase in the KIMVIware pipeline. It validates the subm
 To start the validator service, run the following command from this directory:
 
 ```bash
-python src/validator_service.py
+python3 src/validator_service.py
 ```
 
 The service will connect to RabbitMQ and wait for new submission messages on the `submission.new` queue.

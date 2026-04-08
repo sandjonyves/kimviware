@@ -100,8 +100,8 @@ services:
 
   kimvieware-monitor:
     build:
-      context: ../kimvieware-monitor # Path to the monitor service directory
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: kimvieware-monitor/Dockerfile
     container_name: kimvieware_monitor
     environment:
       RABBITMQ_HOST: rabbitmq
