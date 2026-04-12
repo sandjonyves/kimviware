@@ -28,10 +28,22 @@ This is the main orchestrator for the KIMVIware system. It provides a web interf
 To start the orchestrator server, run the following command from this directory:
 
 ```bash
-python run_orchestrator.py
+python3 run_orchestrator.py
 ```
 
 The server will be available at `http://localhost:8080`.
+
+## Structure (code)
+
+*   `src/kimvieware_orchestrator/` — application package
+    *   `main.py` — factory `create_app()`, montage des routes
+    *   `api/legacy.py` — API historique `/api/*` (dashboard actuel)
+    *   `api/v1/` — API versionnée `/api/v1/*`
+    *   `web/pages.py` — pages HTML (dashboard)
+    *   `services/` — logique métier (jobs, stats, services pipeline)
+    *   `infrastructure/` — consumer RabbitMQ `phase.updates`
+*   `templates/` — Jinja2 : `layouts/`, `pages/`, `components/`
+*   `static/` — CSS / JS servis sous `/static/`
 
 ## Features
 
@@ -39,5 +51,5 @@ The server will be available at `http://localhost:8080`.
 *   **Jobs**: View all jobs in real-time.
 *   **Services**: Check the status of the microservices.
 *   **Statistics**: View complete statistics.
-*   **WebSocket**: Real-time updates at `ws://localhost:8080/ws`.
-*   **API**: The API is available at `http://localhost:8080/api/`.
+*   **API legacy**: `http://localhost:8080/api/` (chemins inchangés pour le dashboard).
+*   **API v1**: `http://localhost:8080/api/v1/` (ex. `POST /api/v1/jobs` pour soumettre un SUT).

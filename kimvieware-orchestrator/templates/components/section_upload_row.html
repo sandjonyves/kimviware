@@ -1,0 +1,78 @@
+<div id="uploadSection">
+    <div class="row g-4">
+        <div class="col-lg-6">
+            <div class="card shadow-lg h-100">
+                <div class="card-header border-0 d-flex align-items-center">
+                    <i class="bi bi-box-seam fs-4 me-2"></i>
+                    <h5 class="mb-0">Soumettre Votre SUT</h5>
+                </div>
+                <div class="card-body">
+                    <form id="uploadForm" enctype="multipart/form-data">
+                        <div class="mb-3">
+                            <label for="fileInput" class="form-label visually-hidden">Fichier SUT</label>
+                            <div class="input-group">
+                                <input type="file" class="form-control" id="fileInput" accept=".zip,.tar,.tar.gz,.rar" required>
+                                <label class="input-group-text" for="fileInput"><i class="bi bi-folder-fill me-2"></i>Choisir fichier</label>
+                            </div>
+                            <div id="fileName" class="form-text mt-2 text-center" style="display: none;"></div>
+                        </div>
+
+                        <div class="progress mt-3 d-none" id="progressBar" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated" id="progressFill" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-lg w-100 mt-3" id="submitBtn">
+                            <i class="bi bi-rocket-fill me-2"></i>
+                            Analyser le SUT
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card shadow-lg h-100">
+                <div class="card-header border-0 d-flex align-items-center">
+                    <i class="bi bi-bar-chart-line-fill fs-4 me-2"></i>
+                    <h5 class="mb-0">Métriques Plateforme</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <div class="card text-white bg-info mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title text-center" id="totalJobs">0</h5>
+                                    <p class="card-text text-center">Emplois Total</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card text-white bg-success mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title text-center" id="completedJobs">0</h5>
+                                    <p class="card-text text-center">Complétés</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card text-white bg-warning mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title text-center" id="avgReduction">--</h5>
+                                    <p class="card-text text-center">Score Mutation</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card text-white bg-primary mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title text-center" id="successRate">0%</h5>
+                                    <p class="card-text text-center">Taux Succès</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

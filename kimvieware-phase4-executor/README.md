@@ -30,7 +30,7 @@ This service is the final phase in the KIMVIware pipeline. It generates and exec
 To start the executor service, run the following command from this directory:
 
 ```bash
-python src/executor_service.py
+python3 src/executor_service.py
 ```
 
 The service will connect to RabbitMQ and wait for new messages on the `optimization.completed` queue.

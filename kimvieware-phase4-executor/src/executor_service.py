@@ -28,6 +28,33 @@ class ExecutorService(MicroserviceBase):
         self.test_generator = TestGenerator()
         self.test_executor = TestExecutor()
         self.mutation_tester = MutationTester()
+
+    def _print_generated_tests(self, test_file: Path, max_lines: int = 300):
+        """Print generated tests in terminal with clear formatting."""
+        try:
+            content = test_file.read_text(encoding="utf-8")
+        except Exception as e:
+            self.logger.warning(f"Unable to read generated tests file: {e}")
+            return
+
+        lines = content.splitlines()
+        total_lines = len(lines)
+
+        self.logger.info("=" * 80)
+        self.logger.info("GENERATED TEST FILE")
+        self.logger.info(f"Path: {test_file}")
+        self.logger.info(f"Lines: {total_lines}")
+        self.logger.info("=" * 80)
+
+        if total_lines > max_lines:
+            preview = "\n".join(lines[:max_lines])
+            self.logger.info(preview)
+            self.logger.info("-" * 80)
+            self.logger.info(f"[TRUNCATED] Showing first {max_lines}/{total_lines} lines")
+        else:
+            self.logger.info(content)
+
+        self.logger.info("=" * 80)
     
     def process_message(self, message: dict) -> dict:
         """Execute tests and perform mutation analysis"""
@@ -61,6 +88,7 @@ class ExecutorService(MicroserviceBase):
             try:
                 # Pass the custom SUT URL to the generator
                 test_file = self.test_generator.generate(trajectories, output_dir)
+                self._print_generated_tests(test_file)
                 
                 # Step 2: Execute tests
                 exec_stats = self.test_executor.execute(test_file, sut_url=sut_url, test_count=test_count)
@@ -115,4 +143,3 @@ class ExecutorService(MicroserviceBase):
 if __name__ == "__main__":
     service = ExecutorService()
     service.start()
-

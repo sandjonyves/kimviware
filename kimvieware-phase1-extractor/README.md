@@ -58,7 +58,7 @@ This service is responsible for extracting symbolic execution paths from Systems
 To start the extractor service, run the following command from this directory:
 
 ```bash
-python src/extractor_service.py
+python3 src/extractor_service.py
 ```
 
 This service will listen for messages on the `validation.completed` RabbitMQ queue.

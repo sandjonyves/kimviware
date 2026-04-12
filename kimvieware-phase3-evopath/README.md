@@ -29,7 +29,7 @@ This service is the third phase in the KIMVIware pipeline. It uses a genetic alg
 To start the EvoPath service, run the following command from this directory:
 
 ```bash
-python src/evopath_service.py
+python3 src/evopath_service.py
 ```
 
 The service will connect to RabbitMQ and wait for new messages on the `reduction.completed` queue.

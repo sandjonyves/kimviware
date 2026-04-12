@@ -1,0 +1,20 @@
+{% extends "layouts/base.html" %}
+{% block title %}{{ page_title | default("KIMVIEware Pro") }}{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/dashboard.css') }}">
+{% endblock %}
+{% block body %}
+{% include "components/navbar.html" %}
+<div class="container-fluid mt-4">
+    {% include "components/dashboard_hero.html" %}
+    {% include "components/alerts.html" %}
+    {% include "components/section_upload_row.html" %}
+    {% include "components/section_jobs.html" %}
+    {% include "components/section_services.html" %}
+    {% include "components/section_stats.html" %}
+</div>
+{% include "components/job_modal.html" %}
+{% endblock %}
+{% block page_scripts %}
+<script src="{{ url_for('static', path='js/dashboard.js') }}"></script>
+{% endblock %}
