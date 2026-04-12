@@ -2,7 +2,9 @@
 <html>
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Job {{ job_id[:8] }} - Full Details</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -21,7 +23,14 @@
             color: white;
         }
         
-        .header h1 { font-size: 2em; margin-bottom: 10px; }
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .header h1 .bi { flex-shrink: 0; }
         .header .meta { opacity: 0.9; }
         
         .back-btn {
@@ -48,8 +57,9 @@
             margin-bottom: 20px;
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
         }
+        .section-title .bi { font-size: 1.15em; opacity: 0.95; }
         
         .trajectory-grid {
             display: grid;
@@ -189,10 +199,10 @@
 </head>
 <body>
     <div class="container">
-        <a href="/" class="back-btn">← Back to Dashboard</a>
+        <a href="/" class="back-btn"><i class="bi bi-arrow-left"></i> Retour au tableau de bord</a>
         
         <div class="header">
-            <h1>🔬 Complete Analysis Report</h1>
+            <h1><i class="bi bi-clipboard-data"></i> Rapport d’analyse complet</h1>
             <div class="meta">
                 <strong>Job ID:</strong> {{ job_id }}<br>
                 <strong>SUT:</strong> {{ sut_name }}<br>
@@ -203,7 +213,8 @@
         <!-- PHASE 1: ALL EXTRACTED PATHS -->
         <div class="section">
             <div class="section-title">
-                📊 Phase 1: Symbolic Execution - All Extracted Paths
+                <i class="bi bi-diagram-3" aria-hidden="true"></i>
+                <span>Phase 1 · Exécution symbolique — chemins extraits</span>
             </div>
             
             <div class="metric-row">
@@ -251,7 +262,8 @@
         <!-- PHASE 2: SGATS REDUCTION -->
         <div class="section">
             <div class="section-title">
-                🔀 Phase 2: SGATS Reduction - Detailed Analysis
+                <i class="bi bi-funnel" aria-hidden="true"></i>
+                <span>Phase 2 · Réduction SGATS — analyse détaillée</span>
             </div>
             
             <div class="metric-row">
@@ -315,7 +327,8 @@
         <!-- PHASE 3: EVOPATH-GA OPTIMIZATION -->
         <div class="section">
             <div class="section-title">
-                🧬 Phase 3: EvoPath-GA - Genetic Algorithm Optimization
+                <i class="bi bi-bezier2" aria-hidden="true"></i>
+                <span>Phase 3 · EvoPath-GA — optimisation multi-objectifs</span>
             </div>
             
             <div class="metric-row">
@@ -342,7 +355,7 @@
             <div class="trajectory-grid">
                 {% for traj in phase3_trajectories %}
                 <div class="trajectory-card" style="border-color: #4CAF50;">
-                    <div class="trajectory-id" style="color: #4CAF50;">{{ traj.path_id }} ⭐</div>
+                    <div class="trajectory-id" style="color: #4CAF50;">{{ traj.path_id }} <i class="bi bi-star-fill" style="font-size:0.85em" title="Optimal" aria-label="Optimal"></i></div>
                     <div class="trajectory-detail">
                         <span>Blocks:</span> <strong>{{ traj.basic_blocks|length }}</strong>
                     </div>
@@ -377,7 +390,8 @@ Where:
         <!-- PHASE 4: GENERATED TESTS -->
         <div class="section">
             <div class="section-title">
-                🧪 Phase 4: Generated Test Cases
+                <i class="bi bi-code-square" aria-hidden="true"></i>
+                <span>Phase 4 · Cas de tests générés</span>
             </div>
             
             <div class="metric-row">
@@ -414,7 +428,8 @@ Where:
         <!-- SUMMARY -->
         <div class="section">
             <div class="section-title">
-                📈 Complete Pipeline Summary
+                <i class="bi bi-bar-chart-line" aria-hidden="true"></i>
+                <span>Synthèse du pipeline</span>
             </div>
             
             <table class="comparison-table">

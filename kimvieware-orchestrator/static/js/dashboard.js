@@ -1,3 +1,17 @@
+function escapeHtml(text) {
+    if (text == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+const ALERT_ICONS = {
+    success: 'bi-check-circle-fill',
+    error: 'bi-exclamation-octagon-fill',
+    info: 'bi-info-circle-fill',
+    warning: 'bi-exclamation-triangle-fill',
+};
+
 // Initialize Bootstrap Modal
 let jobDetailModal;
 document.addEventListener('DOMContentLoaded', () => {
@@ -40,11 +54,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Helper function for alerts
 function showAlert(type, message) {
     const alertElement = document.getElementById(`alert${type.charAt(0).toUpperCase() + type.slice(1)}`);
     if (alertElement) {
-        alertElement.innerHTML = `<i class="bi bi-info-circle me-2"></i> ${message}`;
+        const iconClass = ALERT_ICONS[type] || ALERT_ICONS.info;
+        alertElement.innerHTML = `<i class="bi ${iconClass} me-2 flex-shrink-0" aria-hidden="true"></i><span>${escapeHtml(message)}</span>`;
         alertElement.classList.remove('d-none');
         alertElement.classList.add('show');
         setTimeout(() => {
@@ -57,7 +71,11 @@ function showAlert(type, message) {
 function updateFileName(file) {
     const fileNameEl = document.getElementById('fileName');
     if (fileNameEl) {
-        fileNameEl.textContent = `📄 ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+        const kb = (file.size / 1024).toFixed(1);
+        fileNameEl.innerHTML =
+            `<i class="bi bi-file-earmark-binary text-primary me-2" aria-hidden="true"></i>` +
+            `<span class="fw-medium">${escapeHtml(file.name)}</span> ` +
+            `<span class="text-muted">(${kb} KB)</span>`;
         fileNameEl.style.display = 'block';
     }
 }
@@ -68,7 +86,7 @@ async function handleUpload(e) {
     const fileInput = document.getElementById('fileInput');
     const file = fileInput.files[0];
     if (!file) {
-        showAlert('error', '❌ Veuillez sélectionner un fichier');
+        showAlert('error', 'Veuillez sélectionner un fichier.');
         return;
     }
 
@@ -105,7 +123,7 @@ async function handleUpload(e) {
 
         if (response.ok) {
             const result = await response.json();
-            showAlert('success', `✅ SUT soumis avec succès! ID: ${result.job_id.substring(0, 8)}`);
+            showAlert('success', `SUT soumis avec succès. Identifiant : ${result.job_id.substring(0, 8)}…`);
 
             setTimeout(() => {
                 document.getElementById('uploadForm').reset();
@@ -118,10 +136,10 @@ async function handleUpload(e) {
             }, 1500); // Shorter delay
         } else {
             const error = await response.json();
-            showAlert('error', `❌ Erreur: ${error.detail || 'Erreur inconnue'}`);
+            showAlert('error', `Erreur : ${error.detail || 'Erreur inconnue'}`);
         }
     } catch (error) {
-        showAlert('error', `❌ Erreur de connexion: ${error.message || 'Impossible de joindre le serveur'}`);
+        showAlert('error', `Erreur de connexion : ${error.message || 'Impossible de joindre le serveur'}`);
     } finally {
         submitBtn.disabled = false;
     }
@@ -207,12 +225,16 @@ async function loadJobs() {
                 // Format uploaded_at date
                 const uploadedAt = job.uploaded_at ? new Date(job.uploaded_at).toLocaleString('fr-FR') : 'N/A';
                 
+                const titleText = job.filename || `Job ${job.job_id.substring(0, 8)}`;
                 return `
                 <button type="button" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center" onclick="viewJobDetails('${job.job_id}')">
                     <div class="d-flex flex-column text-start">
-                        <h6 class="mb-1">📄 ${job.filename || `Job ${job.job_id.substring(0, 8)}`}</h6>
-                        <small class="text-muted">ID: ${job.job_id}</small>
-                        <small class="text-muted">Soumis le: ${uploadedAt}</small>
+                        <h6 class="mb-1 d-flex align-items-center gap-2 fw-semibold">
+                            <i class="bi bi-file-earmark-zip text-primary flex-shrink-0" aria-hidden="true"></i>
+                            <span>${escapeHtml(titleText)}</span>
+                        </h6>
+                        <small class="text-muted">ID : ${escapeHtml(job.job_id)}</small>
+                        <small class="text-muted">Soumis le : ${escapeHtml(uploadedAt)}</small>
                     </div>
                     <span class="badge ${statusClass} rounded-pill fs-6 py-2 px-3">
                         <i class="bi ${iconClass} me-1"></i> ${status.toUpperCase()}
@@ -223,7 +245,7 @@ async function loadJobs() {
         }
     } catch (error) {
         console.error('Error loading jobs:', error);
-        showAlert('error', `❌ Erreur de chargement des emplois: ${error.message || 'Serveur inaccessible'}`);
+        showAlert('error', `Erreur de chargement des emplois : ${error.message || 'Serveur inaccessible'}`);
     }
 }
 
@@ -267,7 +289,7 @@ async function loadServices() {
         `).join('');
     } catch (error) {
         console.error('Error loading services:', error);
-        showAlert('error', `❌ Erreur de chargement des services: ${error.message || 'Serveur inaccessible'}`);
+        showAlert('error', `Erreur de chargement des services : ${error.message || 'Serveur inaccessible'}`);
     }
 }
 
@@ -284,7 +306,7 @@ async function loadStats() {
 
     } catch (error) {
         console.error('Error loading stats:', error);
-        showAlert('error', `❌ Erreur de chargement des statistiques: ${error.message || 'Serveur inaccessible'}`);
+        showAlert('error', `Erreur de chargement des statistiques : ${error.message || 'Serveur inaccessible'}`);
     }
 }
 
@@ -528,7 +550,7 @@ async function viewJobDetails(jobId) {
         jobDetailModal.show(); // Show modal using Bootstrap JS API
     } catch (error) {
         console.error('Error fetching job details:', error);
-        showAlert('error', `❌ Erreur de chargement des détails de l'emploi: ${error.message || 'Détails non trouvés'}`);
+        showAlert('error', `Erreur de chargement des détails de l’emploi : ${error.message || 'Détails non trouvés'}`);
     }
 }
 
@@ -564,22 +586,22 @@ function getStatusBadgeClass(status) {
 
 // Service management functions
 async function checkServiceHealth(serviceKey) {
-    showAlert('info', `🔍 Vérification de la santé du service ${serviceKey}...`);
+    showAlert('info', `Vérification de la santé du service « ${serviceKey} »…`);
     try {
         const response = await fetch(`/api/services/${serviceKey}/health`);
         if (response.ok) {
             const health = await response.json();
-            showAlert('success', `✅ Service ${serviceKey} est sain: ${JSON.stringify(health)}`);
+            showAlert('success', `Service « ${serviceKey} » : ${JSON.stringify(health)}`);
         } else {
-            showAlert('error', `❌ Service ${serviceKey} n'est pas accessible`);
+            showAlert('error', `Le service « ${serviceKey} » n’est pas accessible.`);
         }
     } catch (error) {
-        showAlert('error', `❌ Erreur de vérification: ${error.message}`);
+        showAlert('error', `Erreur de vérification : ${error.message}`);
     }
 }
 
 async function viewServiceLogs(serviceKey) {
-    showAlert('info', `📋 Récupération des logs du service ${serviceKey}...`);
+    showAlert('info', `Récupération des logs du service « ${serviceKey} »…`);
     try {
         const response = await fetch(`/api/services/${serviceKey}/logs`);
         if (response.ok) {
@@ -590,10 +612,10 @@ async function viewServiceLogs(serviceKey) {
             document.getElementById('jobModalContent').innerHTML = `<pre style="max-height: 400px; overflow-y: auto;">${logs}</pre>`;
             logsModal.show();
         } else {
-            showAlert('error', `❌ Impossible de récupérer les logs du service ${serviceKey}`);
+            showAlert('error', `Impossible de récupérer les logs du service « ${serviceKey} ».`);
         }
     } catch (error) {
-        showAlert('error', `❌ Erreur de récupération des logs: ${error.message}`);
+        showAlert('error', `Erreur de récupération des logs : ${error.message}`);
     }
 }
 
@@ -601,17 +623,17 @@ async function restartService(serviceKey) {
     if (!confirm(`Êtes-vous sûr de vouloir redémarrer le service ${serviceKey} ?`)) {
         return;
     }
-    showAlert('warning', `🔄 Redémarrage du service ${serviceKey}...`);
+    showAlert('warning', `Redémarrage du service « ${serviceKey} » en cours…`);
     try {
         const response = await fetch(`/api/services/${serviceKey}/restart`, { method: 'POST' });
         if (response.ok) {
-            showAlert('success', `✅ Service ${serviceKey} redémarré avec succès`);
+            showAlert('success', `Le service « ${serviceKey} » a été redémarré.`);
             loadServices(); // Refresh services status
         } else {
-            showAlert('error', `❌ Échec du redémarrage du service ${serviceKey}`);
+            showAlert('error', `Échec du redémarrage du service « ${serviceKey} ».`);
         }
     } catch (error) {
-        showAlert('error', `❌ Erreur de redémarrage: ${error.message}`);
+        showAlert('error', `Erreur de redémarrage : ${error.message}`);
     }
 }
 
@@ -628,7 +650,7 @@ function switchTab(tabId) {
     document.querySelectorAll('.navbar-nav .nav-link').forEach(link => {
         link.classList.remove('active');
     });
-    const activeLink = document.querySelector(`.navbar-nav a[onclick*="switchTab('${tabId}')"]`);
+    const activeLink = document.querySelector(`.navbar-nav a[data-nav-tab="${tabId}"]`);
     if (activeLink) {
         activeLink.classList.add('active');
     }

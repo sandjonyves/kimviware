@@ -1,26 +1,45 @@
-<nav class="navbar navbar-expand-lg navbar-light bg-light shadow-sm sticky-top">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="#">🚀 KIMVIEware Pro</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+<nav class="navbar navbar-expand-lg navbar-dark navbar-app sticky-top" aria-label="Navigation principale">
+    <div class="container-fluid px-3 px-lg-4">
+        <a class="navbar-brand d-flex align-items-center gap-3 py-2 text-decoration-none" href="/" onclick="event.preventDefault(); switchTab('upload'); return false;">
+            <span class="navbar-brand-mark d-inline-flex align-items-center justify-content-center rounded-3" aria-hidden="true">
+                <i class="bi bi-diagram-3-fill fs-4"></i>
+            </span>
+            <span class="d-flex flex-column align-items-start lh-sm">
+                <span class="fw-semibold fs-5 navbar-brand-title">KIMVIEware</span>
+                <span class="navbar-brand-subtitle text-white-50 small">Orchestrateur · pipeline de tests</span>
+            </span>
+        </a>
+        <button class="navbar-toggler border-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Ouvrir le menu">
             <span class="navbar-toggler-icon"></span>
         </button>
         <div class="collapse navbar-collapse" id="navbarNav">
-            <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+            <ul class="navbar-nav ms-lg-auto align-items-lg-center gap-lg-1 mt-3 mt-lg-0">
                 <li class="nav-item">
-                    <a class="nav-link" href="#" onclick="return switchTab('upload')"><i class="bi bi-cloud-upload me-2"></i>Soumettre</a>
+                    <a class="nav-link nav-link-app px-3 active" href="#" data-nav-tab="upload" onclick="return switchTab('upload')">
+                        <i class="bi bi-cloud-arrow-up me-2" aria-hidden="true"></i>Soumettre
+                    </a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link" href="#" onclick="return switchTab('jobs')"><i class="bi bi-list-task me-2"></i>Emplois</a>
+                    <a class="nav-link nav-link-app px-3" href="#" data-nav-tab="jobs" onclick="return switchTab('jobs')">
+                        <i class="bi bi-kanban me-2" aria-hidden="true"></i>Emplois
+                    </a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link" href="#" onclick="return switchTab('services')"><i class="bi bi-gear me-2"></i>Services</a>
+                    <a class="nav-link nav-link-app px-3" href="#" data-nav-tab="services" onclick="return switchTab('services')">
+                        <i class="bi bi-hdd-network me-2" aria-hidden="true"></i>Services
+                    </a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link" href="#" onclick="return switchTab('stats')"><i class="bi bi-graph-up me-2"></i>Statistiques</a>
+                    <a class="nav-link nav-link-app px-3" href="#" data-nav-tab="stats" onclick="return switchTab('stats')">
+                        <i class="bi bi-graph-up-arrow me-2" aria-hidden="true"></i>Statistiques
+                    </a>
                 </li>
             </ul>
-            <div class="d-flex align-items-center">
-                <span class="badge bg-success text-white me-2"><i class="bi bi-circle-fill status-dot me-1"></i>En ligne</span>
+            <div class="d-flex align-items-center ms-lg-3 mt-3 mt-lg-0 pt-lg-0 border-top border-secondary border-opacity-25 pt-3 pt-lg-0 mt-lg-0 border-lg-0">
+                <span class="badge rounded-pill badge-pipeline px-3 py-2 d-inline-flex align-items-center gap-2">
+                    <i class="bi bi-broadcast-pin" aria-hidden="true"></i>
+                    <span class="fw-medium">Orchestrateur actif</span>
+                </span>
             </div>
         </div>
     </div>
