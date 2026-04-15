@@ -28,7 +28,7 @@ This is the main orchestrator for the KIMVIware system. It provides a web interf
 To start the orchestrator server, run the following command from this directory:
 
 ```bash
-python run_orchestrator.py
+python3 run_orchestrator.py
 ```
 
 The server will be available at `http://localhost:8080`.

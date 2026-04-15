@@ -29,7 +29,7 @@ This service is the second phase in the KIMVIware pipeline. It uses the SGATS (S
 To start the SGATS service, run the following command from this directory:
 
 ```bash
-python src/sgats_service.py
+python3 src/sgats_service.py
 ```
 
 The service will connect to RabbitMQ and wait for new messages on the `extraction.completed` queue.

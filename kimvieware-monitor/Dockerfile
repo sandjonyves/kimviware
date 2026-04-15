@@ -1,4 +1,4 @@
-FROM python:3.12-slim-buster
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ RUN pip install -e .
 
 # Copy monitor service code
 WORKDIR /app/kimvieware-monitor
-COPY ./requirements.txt .
+COPY kimvieware-monitor/requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY . .
