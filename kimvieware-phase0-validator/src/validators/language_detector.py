@@ -1,306 +1,240 @@
-"""
-Language Detector
-Detects programming language of SUT
-"""
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Optional
+from typing import List, Optional, Dict, Set
 import logging
-import json
 
 
+# =========================================================
+# 🧠 STRATEGY INTERFACE
+# =========================================================
+class LanguageStrategy(ABC):
+
+    @abstractmethod
+    def get_extensions(self) -> Set[str]:
+        pass
+
+    @abstractmethod
+    def detect_files(self, files: List[Path]) -> List[Path]:
+        pass
+
+    @abstractmethod
+    def find_entry_point(self, source_dir: Path, files: List[Path]) -> Optional[Path]:
+        pass
+
+    @abstractmethod
+    def detect_framework(self, source_dir: Path) -> Optional[str]:
+        pass
+
+
+# =========================================================
+# 🐍 PYTHON
+# =========================================================
+class PythonStrategy(LanguageStrategy):
+
+    def get_extensions(self):
+        return {'.py'}
+
+    def detect_files(self, files):
+        return [f for f in files if f.suffix.lower() == '.py']
+
+    def find_entry_point(self, source_dir, files):
+        candidates = ['main.py', 'app.py', '__main__.py', 'run.py']
+
+        for c in candidates:
+            f = source_dir / c
+            if f.exists():
+                return f
+
+        return files[0] if files else None
+
+    def detect_framework(self, source_dir):
+        if (source_dir / "manage.py").exists():
+            return "django"
+        if (source_dir / "requirements.txt").exists():
+            return "flask"
+        return None
+
+
+# =========================================================
+# ☕ JAVA
+# =========================================================
+class JavaStrategy(LanguageStrategy):
+
+    def get_extensions(self):
+        return {'.java'}
+
+    def detect_files(self, files):
+        return [f for f in files if f.suffix.lower() == '.java']
+
+    def find_entry_point(self, source_dir, files):
+        for f in files:
+            try:
+                content = f.read_text(errors="ignore")
+                if "public static void main" in content:
+                    return f
+            except Exception:
+                continue
+        return files[0] if files else None
+
+    def detect_framework(self, source_dir):
+        if (source_dir / "pom.xml").exists():
+            return "spring_boot"
+        return None
+
+
+# =========================================================
+# ⚙️ C / C++
+# =========================================================
+class CppStrategy(LanguageStrategy):
+
+    def get_extensions(self):
+        return {'.c', '.cpp', '.cc', '.cxx', '.h', '.hpp'}
+
+    def detect_files(self, files):
+        return [f for f in files if f.suffix.lower() in self.get_extensions()]
+
+    def find_entry_point(self, source_dir, files):
+        for f in files:
+            try:
+                content = f.read_text(errors="ignore")
+                if "main(" in content:
+                    return f
+            except Exception:
+                continue
+        return files[0] if files else None
+
+    def detect_framework(self, source_dir):
+        return None
+
+
+# =========================================================
+# 🌐 JS / TS
+# =========================================================
+class JavaScriptStrategy(LanguageStrategy):
+
+    def get_extensions(self):
+        return {'.js', '.ts', '.jsx', '.tsx'}
+
+    def detect_files(self, files):
+        return [f for f in files if f.suffix.lower() in self.get_extensions()]
+
+    def find_entry_point(self, source_dir, files):
+        candidates = ["index.js", "app.js", "server.js", "index.ts"]
+
+        for c in candidates:
+            f = source_dir / c
+            if f.exists():
+                return f
+
+        return files[0] if files else None
+
+    def detect_framework(self, source_dir):
+        if (source_dir / "package.json").exists():
+            return "express"
+        return None
+
+
+# =========================================================
+# 🗂️ REGISTRY
+# =========================================================
+class StrategyRegistry:
+
+    def __init__(self):
+        self._strategies: Dict[str, LanguageStrategy] = {}
+
+    def register(self, name: str, strategy: LanguageStrategy):
+        self._strategies[name] = strategy
+
+    def get_all(self):
+        return self._strategies.items()
+
+    def get(self, name: str):
+        return self._strategies.get(name)
+
+
+# =========================================================
+# 🚀 DETECTOR (OCP CLEAN + ROBUST)
+# =========================================================
 class LanguageDetector:
-    """
-    Detect programming language and framework from source directory
 
-    Supports:
-    - Python (.py) - including Django, Flask
-    - C (.c, .h)
-    - C++ (.cpp, .cc, .cxx, .hpp, .h)
-    - Java (.java) - including Spring Boot
-    - JavaScript (.js, .mjs, .cjs, .jsx) - Express only (backend)
-    - TypeScript (.ts, .tsx, .mts)
-    """
+    def __init__(self, registry: StrategyRegistry):
+        self.registry = registry
+        self.logger = logging.getLogger(__name__)
 
-    LANGUAGE_EXTENSIONS = {
-        'python':     {'.py'},
-        'c':          {'.c', '.h'},
-        'cpp':        {'.cpp', '.cc', '.cxx', '.hpp', '.hh', '.h++'},
-        'java':       {'.java'},
-        'javascript': {'.js', '.mjs', '.cjs', '.jsx'},
-        'typescript': {'.ts', '.tsx', '.mts'},
-    }
-    SUPPORTED_LANGUAGES = set(LANGUAGE_EXTENSIONS.keys())
+    def detect(self, source_dir: Path, logger: Optional[logging.Logger] = None):
 
-    FRAMEWORK_INDICATORS = {
-        'django':      ['manage.py', 'settings.py', 'urls.py', 'wsgi.py', 'asgi.py'],
-        'flask':       ['app.py', 'application.py', 'run.py', 'requirements.txt'],
-        'spring_boot': ['pom.xml', 'build.gradle', 'application.properties',
-                        'application.yml', 'src/main/java'],
-        'express':     ['package.json', 'app.js', 'server.js', 'index.js'],
-        # ✅ Pas de nextjs, react, vue, angular — frontend exclu
-    }
-
-    @classmethod
-    def detect(cls, source_dir: Path,
-               logger: logging.Logger = logging.getLogger(__name__)) -> Dict[str, any]:
-        """
-        Detect language from source directory while ignoring heavy directories.
-        """
-        logger.info(f"🔍 Detecting language in {source_dir}")
+        logger = logger or self.logger
 
         ignore_dirs = {
-            'venv', '.venv', 'env', '.env', 'node_modules',
-            '__pycache__', '.git', '.pytest_cache', '.idea', '.vscode',
-            'site-packages', 'dist', 'build'
+            'venv', '.venv', 'env', 'node_modules',
+            '__pycache__', '.git', '.idea', '.vscode',
+            'dist', 'build'
         }
 
-        extension_counts = {}
         all_files = []
 
         for path in source_dir.rglob('*'):
-            path_parts = set(path.parts)
-            if any(ignore in path_parts for ignore in ignore_dirs):
+            if any(d in path.parts for d in ignore_dirs):
                 continue
             if path.is_file():
-                suffix = path.suffix.lower()
-                for lang, exts in cls.LANGUAGE_EXTENSIONS.items():
-                    if suffix in exts:
-                        all_files.append(path)
-                        extension_counts[suffix] = extension_counts.get(suffix, 0) + 1
+                all_files.append(path)
 
         if not all_files:
-            logger.warning("No source files found in authorized directories")
+            logger.warning("No files found")
             return {
                 'language': 'unknown',
-                'files': [],
-                'entry_point': None,
-                'confidence': 0.0
+                'confidence': 0.0,
+                'files': []
             }
 
-        # --- Comptage par langage ---
-        python_count = sum(
-            extension_counts.get(ext, 0)
-            for ext in cls.LANGUAGE_EXTENSIONS['python']
-        )
-        c_count = extension_counts.get('.c', 0)
-        cpp_count = sum(
-            extension_counts.get(ext, 0)
-            for ext in cls.LANGUAGE_EXTENSIONS['cpp'] if ext != '.h'
-        )
-        java_count = extension_counts.get('.java', 0)
-        js_count = sum(
-            extension_counts.get(ext, 0)
-            for ext in cls.LANGUAGE_EXTENSIONS['javascript']
-        )
-        ts_count = sum(
-            extension_counts.get(ext, 0)
-            for ext in cls.LANGUAGE_EXTENSIONS['typescript']
-        )
-        js_ts_count = js_count + ts_count
+        # =====================================================
+        # 🔥 SCORING OCP
+        # =====================================================
+        scores = {}
 
-        total_count = python_count + c_count + cpp_count + java_count + js_ts_count
+        for name, strategy in self.registry.get_all():
+            scores[name] = sum(
+                1 for f in all_files if f.suffix.lower() in strategy.get_extensions()
+            )
 
-        # --- Détermination du langage principal ---
-        counts = {
-            'python':     python_count,
-            'java':       java_count,
-            'cpp':        cpp_count,
-            'c':          c_count,
-            'javascript': js_ts_count,
-        }
-        primary_language = max(counts, key=counts.get)
+        primary_language = max(scores, key=scores.get)
 
-        if counts[primary_language] == 0:
-            language     = 'unknown'
-            confidence   = 0.0
-            source_files = all_files
+        strategy = self.registry.get(primary_language)
 
-        elif primary_language == 'python':
-            language     = 'python'
-            confidence   = python_count / total_count
-            source_files = [f for f in all_files if f.suffix == '.py']
+        if strategy is None:
+            return {
+                'language': 'unknown',
+                'confidence': 0.0,
+                'files': all_files
+            }
 
-        elif primary_language == 'java':
-            language     = 'java'
-            confidence   = java_count / total_count
-            source_files = [f for f in all_files if f.suffix == '.java']
+        language_files = strategy.detect_files(all_files)
 
-        elif primary_language == 'cpp':
-            language     = 'cpp'
-            confidence   = cpp_count / total_count
-            source_files = [
-                f for f in all_files
-                if f.suffix in cls.LANGUAGE_EXTENSIONS['cpp']
-            ]
+        total = sum(scores.values()) or 1  # 🔥 avoid division by zero
+        confidence = scores[primary_language] / total
 
-        elif primary_language == 'c':
-            language     = 'c'
-            confidence   = c_count / total_count
-            source_files = [f for f in all_files if f.suffix in {'.c', '.h'}]
+        entry = strategy.find_entry_point(source_dir, language_files)
+        framework = strategy.detect_framework(source_dir)
 
-        else:  # javascript / typescript
-            language    = 'typescript' if ts_count > js_count else 'javascript'
-            confidence  = js_ts_count / total_count
-            source_files = [
-                f for f in all_files
-                if f.suffix in (
-                    cls.LANGUAGE_EXTENSIONS['javascript'] |
-                    cls.LANGUAGE_EXTENSIONS['typescript']
-                )
-            ]
-
-        # --- Entry point & framework ---
-        entry_point = cls._find_entry_point(source_dir, language, source_files)
-        framework   = cls._detect_framework(source_dir, language, logger)
-
-        logger.info(f"✅ Detected: {language} ({confidence:.0%} confidence)")
-        if framework:
-            logger.info(f"   Framework: {framework}")
-        logger.info(f"   Files: {len(source_files)}")
-        if entry_point:
-            logger.info(f"   Entry: {entry_point.name}")
+        logger.info(f"Detected {primary_language} ({confidence:.0%})")
 
         return {
-            'language':    language,
-            'framework':   framework,
-            'files':       source_files,
-            'entry_point': entry_point,
-            'confidence':  confidence,
-            'file_count':  len(source_files),
+            'language': primary_language,
+            'framework': framework,
+            'files': language_files,
+            'entry_point': entry,
+            'confidence': confidence,
+            'file_count': len(language_files),
         }
 
-    # ------------------------------------------------------------------
-    @classmethod
-    def _find_entry_point(cls, source_dir: Path, language: str,
-                          files: list) -> Optional[Path]:
-        """Find main entry point file"""
 
-        if language == 'python':
-            candidates = ['main.py', 'app.py', '__main__.py', 'run.py']
-            for candidate in candidates:
-                f = source_dir / candidate
-                if f.exists():
-                    return f
-            src_dir = source_dir / 'src'
-            if src_dir.exists():
-                for candidate in candidates:
-                    f = src_dir / candidate
-                    if f.exists():
-                        return f
-            return files[0] if files else None
+# =========================================================
+# 🔌 INIT
+# =========================================================
+registry = StrategyRegistry()
+registry.register("python", PythonStrategy())
+registry.register("java", JavaStrategy())
+registry.register("cpp", CppStrategy())
+registry.register("javascript", JavaScriptStrategy())
 
-        elif language in ['c', 'cpp']:
-            candidates = ['main.c', 'main.cpp', 'app.c', 'app.cpp']
-            for candidate in candidates:
-                f = source_dir / candidate
-                if f.exists():
-                    return f
-            src_dir = source_dir / 'src'
-            if src_dir.exists():
-                for candidate in candidates:
-                    f = src_dir / candidate
-                    if f.exists():
-                        return f
-            for file in files:
-                if file.suffix in {'.c', '.cpp'}:
-                    try:
-                        if 'int main(' in file.read_text() or 'void main(' in file.read_text():
-                            return file
-                    except Exception:
-                        continue
-            return files[0] if files else None
-
-        elif language == 'java':
-            candidates = ['Main.java', 'App.java', 'Application.java']
-            for candidate in candidates:
-                for java_file in files:
-                    if java_file.name == candidate:
-                        return java_file
-            for file in files:
-                try:
-                    if 'public static void main(' in file.read_text():
-                        return file
-                except Exception:
-                    continue
-            return files[0] if files else None
-
-        elif language in ['javascript', 'typescript']:
-            candidates = [
-                # JS backend
-                'index.js', 'main.js', 'app.js', 'server.js', 'index.mjs', 'main.mjs',
-                # TS backend
-                'index.ts', 'main.ts', 'app.ts', 'server.ts',
-            ]
-            for candidate in candidates:
-                f = source_dir / candidate
-                if f.exists():
-                    return f
-            src_dir = source_dir / 'src'
-            if src_dir.exists():
-                for candidate in candidates:
-                    f = src_dir / candidate
-                    if f.exists():
-                        return f
-            # Lire package.json
-            pkg = source_dir / 'package.json'
-            if pkg.exists():
-                try:
-                    data = json.loads(pkg.read_text())
-                    for field in ('main', 'module', 'types', 'typings'):
-                        declared = data.get(field)
-                        if declared:
-                            candidate = source_dir / declared
-                            if candidate.exists():
-                                return candidate
-                except Exception:
-                    pass
-            return files[0] if files else None
-
-        return None
-
-    # ------------------------------------------------------------------
-    @classmethod
-    def _detect_framework(cls, source_dir: Path, language: str,
-                          logger: logging.Logger) -> Optional[str]:
-        """Detect backend framework only"""
-
-        if language == 'python':
-            django_score = sum(
-                1 for ind in cls.FRAMEWORK_INDICATORS['django']
-                if (source_dir / ind).exists()
-            )
-            if django_score >= 2:
-                return 'django'
-
-            flask_score = sum(
-                1 for ind in cls.FRAMEWORK_INDICATORS['flask']
-                if (source_dir / ind).exists()
-            )
-            if flask_score >= 1:
-                return 'flask'
-
-        elif language == 'java':
-            spring_score = sum(
-                1 for ind in cls.FRAMEWORK_INDICATORS['spring_boot']
-                if (source_dir / ind).exists()
-            )
-            if spring_score >= 2:
-                return 'spring_boot'
-
-        elif language in ['javascript', 'typescript']:
-            # ✅ Express uniquement — pas de détection frontend (next, react, vue…)
-            express_score = sum(
-                1 for ind in cls.FRAMEWORK_INDICATORS['express']
-                if (source_dir / ind).exists()
-            )
-            if express_score >= 2:
-                return 'express'
-
-        return None
-
-    # ------------------------------------------------------------------
-    @classmethod
-    def find_entry_point(cls, files: list, language: str) -> Optional[Path]:
-        """Public helper: find entry point given a list of Path objects and language."""
-        source_dir = files[0].parent if files else Path('.')
-        return cls._find_entry_point(source_dir, language, files)
+detector = LanguageDetector(registry)
