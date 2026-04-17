@@ -37,7 +37,6 @@ class LanguageDetector:
         'spring_boot': ['pom.xml', 'build.gradle', 'application.properties',
                         'application.yml', 'src/main/java'],
         'express':     ['package.json', 'app.js', 'server.js', 'index.js'],
-        # ✅ Pas de nextjs, react, vue, angular — frontend exclu
     }
 
     @classmethod
