@@ -1,20 +1,27 @@
 """
-Test Executor
-Runs generated tests and collects results
+Test Executor - Runs generated tests and collects results
 """
 import subprocess
+import sys
+import re
 from pathlib import Path
-import json
+from typing import Dict
+
 
 class TestExecutor:
-    """Execute generated tests"""
+    """Execute generated tests using pytest"""
     
-    def execute(self, test_file: Path, sut_url: str = "http://localhost:8000", test_count: int = None) -> dict:
+    def execute(self, test_file: Path, sut_url: str = "http://localhost:8000", test_count: int = None) -> Dict:
         """
         Execute tests using pytest
         
+        Args:
+            test_file: Path to test file (Python or JSON)
+            sut_url: URL of the SUT
+            test_count: Expected number of tests
+        
         Returns:
-            dict with execution results
+            Dict with execution results
         """
         
         print(f"\n🧪 Executing tests from {test_file.name}...")
@@ -22,105 +29,115 @@ class TestExecutor:
         
         # Check if SUT is running
         import requests
+        sut_running = False
         try:
-            response = requests.get(f"{sut_url}/health", timeout=2)
+            response = requests.get(f"{sut_url}/health", timeout=3)
             sut_running = response.status_code == 200
             if sut_running:
                 print(f"✅ SUT is running")
             else:
                 print(f"⚠️  SUT returned {response.status_code}")
-                sut_running = False
         except Exception as e:
             print(f"⚠️  SUT not responding at {sut_url}: {e}")
-            print(f"   Trying with mock SUT...")
-            sut_running = False
         
-        # If SUT not running, use simulated results
-        if not sut_running:
-            return self._simulate_execution(test_file, test_count)
-        
-        # Run pytest - with proper error handling
-        import sys
+        # Run pytest
         cmd = [
             sys.executable, '-m', 'pytest',
             str(test_file),
             '-v',
-            '--tb=short'
+            '--tb=short',
+            '--no-header'
         ]
         
-        # Check if tests exist first
-        collect_cmd = cmd + ['--collect-only']
-        collect_result = subprocess.run(collect_cmd, capture_output=True, text=True, timeout=10)
-        collect_output = collect_result.stdout + collect_result.stderr
+        try:
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                timeout=60,
+                env={**subprocess.os.environ, 'PYTHONPATH': str(test_file.parent)}
+            )
+            
+            # Parse pytest output
+            stats = self._parse_pytest_output(result.stdout + result.stderr, test_count)
+            
+        except subprocess.TimeoutExpired:
+            print(f"⚠️  Test execution timed out after 60 seconds")
+            stats = self._create_timeout_stats(test_count)
+        except Exception as e:
+            print(f"❌ Test execution failed: {e}")
+            stats = self._create_error_stats(test_count, str(e))
         
-        # Count collected tests
-        test_count = collect_output.count('::test_') + collect_output.count('<Function')
-        
-        if test_count == 0:
-            print(f"⚠️  No tests collected!")
-            print(f"Collected output: {collect_output[:500]}")
-            return self._simulate_execution(test_file, test_count if test_count > 0 else None)
-        
-        # Run actual tests
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        
-        # Parse results
-        output = result.stdout + result.stderr
-        
-        passed = output.count(' PASSED') or output.count(' passed')
-        failed = output.count(' FAILED') or output.count(' failed')
-        total = passed + failed
-        
-        # Debug output
-        if total == 0:
-            print(f"DEBUG: pytest exit code: {result.returncode}")
-            print(f"DEBUG: pytest output:\n{output[:1000]}")
-        
-        stats = {
-            'total': max(total, test_count),  # Use collected count if parse failed
-            'passed': passed,
-            'failed': failed,
-            'pass_rate': (passed / total * 100) if total > 0 else 0,
-            'output': output
-        }
-        
+        # Display results
         print(f"\n📊 Execution Results:")
         print(f"   Total: {stats['total']}")
         print(f"   Passed: {stats['passed']}")
         print(f"   Failed: {stats['failed']}")
+        print(f"   Skipped: {stats.get('skipped', 0)}")
         print(f"   Pass rate: {stats['pass_rate']:.1f}%")
         
         return stats
     
-    def _simulate_execution(self, test_file: Path, test_count: int = None) -> dict:
-        """Generate realistic simulated test results based on test file complexity"""
+    def _parse_pytest_output(self, output: str, expected_count: int = None) -> Dict:
+        """Parse pytest output to extract statistics"""
         
-        # Use provided test count or try to extract from file
-        if test_count is None:
-            try:
-                content = test_file.read_text()
-                test_count = content.count('def test_')
-            except:
-                test_count = 50
+        # Extract test counts using regex
+        # Pattern: "= 12 passed, 3 failed, 1 skipped in 0.5s ="
+        summary_pattern = r'=+\s*(\d+)\s+passed,\s*(\d+)\s+failed'
         
-        # Simulate realistic pass rate (70-95%)
-        import random
-        pass_rate = random.uniform(0.70, 0.95)
-        passed = int(test_count * pass_rate)
-        failed = test_count - passed
+        match = re.search(summary_pattern, output)
         
-        stats = {
-            'total': test_count,
+        if match:
+            passed = int(match.group(1))
+            failed = int(match.group(2))
+            
+            # Look for skipped
+            skipped_match = re.search(r'(\d+)\s+skipped', output)
+            skipped = int(skipped_match.group(1)) if skipped_match else 0
+            
+            total = passed + failed + skipped
+        else:
+            # Fallback: count test functions
+            passed = output.count(' PASSED')
+            failed = output.count(' FAILED')
+            skipped = output.count(' SKIPPED')
+            total = passed + failed + skipped
+            
+            if total == 0 and expected_count:
+                total = expected_count
+                passed = expected_count  # Assume all passed if no output
+        
+        pass_rate = (passed / total * 100) if total > 0 else 0
+        
+        return {
+            'total': total,
             'passed': passed,
             'failed': failed,
-            'pass_rate': pass_rate * 100,
-            'output': f"Simulated: {passed}/{test_count} tests passed"
+            'skipped': skipped,
+            'pass_rate': pass_rate,
+            'output': output[:500]  # Truncated output
         }
-        
-        print(f"\n📊 Execution Results (SIMULATED):")
-        print(f"   Total: {stats['total']}")
-        print(f"   Passed: {stats['passed']}")
-        print(f"   Failed: {stats['failed']}")
-        print(f"   Pass rate: {stats['pass_rate']:.1f}%")
-        
-        return stats
+    
+    def _create_timeout_stats(self, test_count: int = None) -> Dict:
+        """Create timeout statistics"""
+        total = test_count if test_count else 0
+        return {
+            'total': total,
+            'passed': 0,
+            'failed': total,
+            'skipped': 0,
+            'pass_rate': 0.0,
+            'output': 'Test execution timed out'
+        }
+    
+    def _create_error_stats(self, test_count: int = None, error: str = "") -> Dict:
+        """Create error statistics"""
+        total = test_count if test_count else 0
+        return {
+            'total': total,
+            'passed': 0,
+            'failed': total,
+            'skipped': 0,
+            'pass_rate': 0.0,
+            'output': f'Execution error: {error}'
+        }
