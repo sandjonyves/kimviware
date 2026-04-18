@@ -9,7 +9,7 @@ import os
 from datetime import datetime, timezone
 
 from kimvieware_shared import MicroserviceBase, JobStatus
-from extractors import PythonExtractor, CExtractor, JavaExtractor, JSExtractor  # ✅ JSExtractor importé
+from extractors import PythonExtractor, CExtractor, JavaExtractor, JSExtractor
 
 
 class ExtractorService(MicroserviceBase):
@@ -28,7 +28,34 @@ class ExtractorService(MicroserviceBase):
         self.python_extractor = PythonExtractor(max_paths=self.max_paths)
         self.c_extractor      = CExtractor(max_paths=self.max_paths)
         self.java_extractor   = JavaExtractor(max_paths=self.max_paths)
-        self.js_extractor     = JSExtractor(max_paths=self.max_paths)  # ✅ Ajouté
+        self.js_extractor     = JSExtractor(max_paths=self.max_paths)
+
+    def _display_trajectories_sample(self, trajectories: list, job_id: str, max_display: int = 5):
+        """
+        Affiche un échantillon des trajectoires extraites dans les logs
+        """
+        self.logger.info(f"[{job_id}] ========== SAMPLE TRAJECTORIES ({len(trajectories)} total) ==========")
+        
+        for i, traj in enumerate(trajectories[:max_display]):
+            self.logger.info(f"[{job_id}] ")
+            self.logger.info(f"[{job_id}] --- Trajectory {i+1} ---")
+            self.logger.info(f"[{job_id}] ID: {traj.path_id}")
+            
+            # Afficher tous les attributs disponibles
+            for attr in ['language', 'cost', 'entry_point', 'branches_covered', 'basic_blocks', 'input_data', 'output_expected']:
+                if hasattr(traj, attr):
+                    value = getattr(traj, attr)
+                    if attr == 'branches_covered':
+                        value = f"{len(value)} branches"
+                    elif attr == 'basic_blocks':
+                        value = f"{len(value)} blocks"
+                    self.logger.info(f"[{job_id}] {attr}: {value}")
+        
+        if len(trajectories) > max_display:
+            self.logger.info(f"[{job_id}] ")
+            self.logger.info(f"[{job_id}] ... and {len(trajectories) - max_display} more trajectories")
+        
+        self.logger.info(f"[{job_id}] ==================================================")
 
     def process_message(self, message: dict) -> dict:
         """Extract symbolic execution paths"""
@@ -65,7 +92,7 @@ class ExtractorService(MicroserviceBase):
             self.logger.info(f"[{job_id}] Using C/C++ extractor")
             trajectories = self.c_extractor.extract_paths(extracted_path)
 
-        elif language in ['javascript', 'typescript']:          # ✅ typescript aussi
+        elif language in ['javascript', 'typescript']:
             self.logger.info(f"[{job_id}] Using JS/TS extractor (acorn)")
             trajectories = self.js_extractor.extract_paths(extracted_path)
 
@@ -73,6 +100,9 @@ class ExtractorService(MicroserviceBase):
             return self._error_response(job_id, f"Unsupported language: {language}")
 
         self.logger.info(f"[{job_id}] Extracted {len(trajectories)} trajectories")
+        
+        # AFFICHAGE DES 5 PREMIÈRES TRAJECTOIRES
+        self._display_trajectories_sample(trajectories, job_id, max_display=5)
 
         # Nom de l'extracteur utilisé pour les métadonnées
         extractor_name = {
