@@ -1,0 +1,73 @@
+{
+  "job_id": "job_0039",
+  "exported_at": "2026-04-18T09:14:01.261118",
+  "total_tests": 3,
+  "execution_stats": {
+    "passed": 3,
+    "failed": 0,
+    "pass_rate": 100.0
+  },
+  "mutation_stats": {
+    "score": 0,
+    "killed": 0,
+    "survived": 0,
+    "total_mutants": 0
+  },
+  "test_cases": [
+    {
+      "test_id": "js_main_path_011",
+      "branches_covered": [
+        [
+          19,
+          20
+        ],
+        [
+          22,
+          25
+        ],
+        [
+          21,
+          22
+        ],
+        [
+          20,
+          21
+        ]
+      ],
+      "branches_count": 4,
+      "cost": 7.0,
+      "input_data": null,
+      "output_expected": null
+    },
+    {
+      "test_id": "js_main_path_073",
+      "branches_covered": [
+        [
+          135,
+          140
+        ],
+        [
+          153,
+          154
+        ]
+      ],
+      "branches_count": 2,
+      "cost": 7.0,
+      "input_data": null,
+      "output_expected": null
+    },
+    {
+      "test_id": "js_main_path_067",
+      "branches_covered": [
+        [
+          135,
+          139
+        ]
+      ],
+      "branches_count": 1,
+      "cost": 3.0,
+      "input_data": null,
+      "output_expected": null
+    }
+  ]
+}
