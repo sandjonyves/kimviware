@@ -61,6 +61,16 @@ class ExecutorService(MicroserviceBase):
         trajectories_data = _parse_field(message.get('trajectories', []))
         sut_info          = _parse_field(message.get('sut_info', {}))
 
+        # ── Détecter le framework depuis le source si absent de sut_info ──
+        if isinstance(sut_info, dict) and not sut_info.get('framework'):
+            sut_source_path_tmp = self._resolve_source_path(message, sut_info, job_id)
+            if sut_source_path_tmp:
+                sut_info['framework'] = self._detect_framework(sut_source_path_tmp)
+
+        # Log framework détecté
+        framework = sut_info.get('framework') if isinstance(sut_info, dict) else None
+        self.logger.info(f"[{job_id}] Framework: {framework or 'none'} | Language: {sut_info.get('language') if isinstance(sut_info, dict) else '?'}")
+
         if not trajectories_data:
             return self._error(job_id, "No trajectories to execute")
 
@@ -85,6 +95,7 @@ class ExecutorService(MicroserviceBase):
                 trajectories=trajectories,
                 output_dir=tmpdir_path,
                 sut_source_path=sut_source_path,
+                sut_info=sut_info,
             )
 
             # Step 2 — Exécuter avec pytest + coverage
@@ -92,6 +103,7 @@ class ExecutorService(MicroserviceBase):
                 test_file=test_file,
                 trajectories_data=trajectories_data,
                 sut_source_path=sut_source_path,
+                sut_info=sut_info,
             )
 
         except Exception as exc:
@@ -129,6 +141,24 @@ class ExecutorService(MicroserviceBase):
     # ------------------------------------------------------------------
     # Résolution du chemin source
     # ------------------------------------------------------------------
+
+    def _detect_framework(self, source_path: Path) -> str | None:
+        """Détecte le framework depuis le code source directement."""
+        # Django : manage.py + settings.py + urls.py
+        django_indicators = ['manage.py', 'settings.py', 'urls.py', 'wsgi.py']
+        django_score = sum(1 for ind in django_indicators if list(source_path.rglob(ind)))
+        if django_score >= 2:
+            return 'django'
+
+        # Flask : app.py ou from flask import
+        for f in source_path.rglob('*.py'):
+            try:
+                if 'from flask import' in f.read_text(encoding='utf-8', errors='replace'):
+                    return 'flask'
+            except Exception:
+                pass
+
+        return None
 
     def _resolve_source_path(self, message: dict, sut_info: dict, job_id: str) -> Path | None:
         """
