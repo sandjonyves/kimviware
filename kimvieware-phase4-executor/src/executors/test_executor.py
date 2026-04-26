@@ -59,6 +59,9 @@ class TestExecutor:
         passed, failed, errors = self._parse_counts(pytest_output)
         total = passed + failed + errors
 
+        # Parser les résultats individuels par test
+        test_results = self._parse_test_results(pytest_output)
+
         # ── Étape 2 : coverage ────────────────────────────────────────────
         line_cov, branch_cov_pct = None, None
         if sut_source_path and sut_source_path.exists():
@@ -78,6 +81,7 @@ class TestExecutor:
             'failed': failed,
             'errors': errors,
             'pass_rate': round((passed / total * 100) if total > 0 else 0.0, 1),
+            'test_results': test_results,   # dict {test_name: 'PASSED'|'FAILED'|'SKIPPED'}
             'line_coverage_pct': line_cov,
             'branch_coverage_pct': branch_cov_pct,
             'logical_branch_coverage': logical,
@@ -237,6 +241,26 @@ class TestExecutor:
             elif kind == 'failed': failed = n
             elif kind == 'error':  errors = n
         return passed, failed, errors
+
+    def _parse_test_results(self, output: str) -> Dict[str, str]:
+        """
+        Parse la sortie pytest -v et retourne un dict :
+          { 'test_name': 'PASSED' | 'FAILED' | 'SKIPPED' | 'ERROR' }
+
+        Exemples de lignes pytest -v :
+          test_generated.py::test_django_get__admin__0 PASSED  [ 10%]
+          test_generated.py::test_branch_main_b0_1 FAILED      [ 20%]
+        """
+        results: Dict[str, str] = {}
+        pattern = re.compile(
+            r'test_generated\.py::(\S+)\s+(PASSED|FAILED|SKIPPED|ERROR)',
+            re.IGNORECASE
+        )
+        for m in pattern.finditer(output):
+            test_name = m.group(1)
+            status = m.group(2).upper()
+            results[test_name] = status
+        return results
 
     def _parse_coverage(self, output: str) -> Tuple:
         # Avec branches : TOTAL  Stmts  Miss  Branch  BrPart  Cover%

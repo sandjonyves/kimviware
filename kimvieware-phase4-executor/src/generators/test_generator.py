@@ -11,7 +11,7 @@ import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / 'kimvieware-shared' / 'src'))
 from kimvieware_shared.models import Trajectory
@@ -44,43 +44,31 @@ class DjangoProjectAnalyzer:
         self.django_root = self._find_django_root()
 
     def _find_django_root(self) -> Path:
-        """Trouve le dossier contenant manage.py — c'est le vrai root Django."""
         for manage in sorted(self.root.rglob('manage.py')):
             return manage.parent
         return self.root
 
     def find_settings_module(self) -> Optional[str]:
-        """
-        Trouve DJANGO_SETTINGS_MODULE depuis manage.py.
-        Retourne ex: 'backend.settings' (relatif à django_root).
-        """
-        # 1. Lire manage.py directement
         manage_py = self.django_root / 'manage.py'
         if manage_py.exists():
             try:
                 src = manage_py.read_text(encoding='utf-8', errors='replace')
-                m = re.search(
-                    r'DJANGO_SETTINGS_MODULE["\s,]+["\']([^"\']+)["\']', src
-                )
+                m = re.search(r'DJANGO_SETTINGS_MODULE["\s,]+["\']([^"\']+)["\']', src)
                 if m:
                     return m.group(1)
             except Exception:
                 pass
 
-        # 2. Chercher dans wsgi.py / asgi.py dans django_root
         for fname in ['wsgi.py', 'asgi.py']:
             for f in self.django_root.rglob(fname):
                 try:
                     src = f.read_text(encoding='utf-8', errors='replace')
-                    m = re.search(
-                        r'DJANGO_SETTINGS_MODULE["\s,]+["\']([^"\']+)["\']', src
-                    )
+                    m = re.search(r'DJANGO_SETTINGS_MODULE["\s,]+["\']([^"\']+)["\']', src)
                     if m:
                         return m.group(1)
                 except Exception:
                     pass
 
-        # 3. Fallback : trouver settings.py relatif à django_root
         for f in self.django_root.rglob('settings.py'):
             try:
                 parts = f.relative_to(self.django_root).with_suffix('').parts
@@ -92,7 +80,6 @@ class DjangoProjectAnalyzer:
         return None
 
     def extract_urls(self) -> List[Dict[str, Any]]:
-        """Extrait les URL patterns depuis tous les urls.py du projet."""
         urls = []
         for urls_file in self.django_root.rglob('urls.py'):
             urls.extend(self._parse_urls_file(urls_file))
@@ -140,7 +127,6 @@ class DjangoProjectAnalyzer:
         return results
 
     def extract_views(self) -> List[Dict[str, Any]]:
-        """Extrait les classes de views depuis tous les views.py."""
         views = []
         for views_file in self.django_root.rglob('views.py'):
             views.extend(self._parse_views_file(views_file))
@@ -187,7 +173,6 @@ class DjangoProjectAnalyzer:
         return results
 
     def extract_model_names(self) -> List[str]:
-        """Extrait les noms des modèles Django."""
         models = []
         for models_file in self.django_root.rglob('models.py'):
             try:
@@ -205,6 +190,32 @@ class DjangoProjectAnalyzer:
             except Exception:
                 pass
         return models
+
+    def extract_ast_branches(self) -> List[Dict[str, Any]]:
+        """
+        Extrait les branches AST depuis views.py, permissions.py, serializers.py.
+        Retourne : [{file, rel_path, condition}]
+        """
+        ast_branches = []
+        for pattern in ['views.py', 'permissions.py', 'serializers.py']:
+            for f in self.django_root.rglob(pattern):
+                try:
+                    src = f.read_text(encoding='utf-8', errors='replace')
+                    tree = ast.parse(src)
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.If):
+                            try:
+                                condition = ast.unparse(node.test)
+                                ast_branches.append({
+                                    'file': f.name,
+                                    'rel_path': str(f.relative_to(self.django_root)),
+                                    'condition': condition,
+                                })
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        return ast_branches
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +312,14 @@ class TestGenerator:
         output_dir: Path,
         sut_source_path: Path = None,
         sut_info: Dict = None,
-    ) -> Path:
+    ) -> Tuple[Path, Dict[str, List[str]]]:
+        """
+        Génère le fichier de test.
+
+        Retourne : (test_file, branch_test_map)
+          branch_test_map : { label_branche → [nom_test, ...] }
+          Utilisé par TestExecutor pour afficher les résultats par branche.
+        """
         output_dir.mkdir(parents=True, exist_ok=True)
         test_file = output_dir / 'test_generated.py'
 
@@ -314,33 +332,45 @@ class TestGenerator:
 
         if sut_source_path and sut_source_path.exists():
             if framework == 'django':
-                code = self._generate_django_tests(trajectories, sut_source_path)
+                code, branch_test_map = self._generate_django_tests(
+                    trajectories, sut_source_path
+                )
             else:
-                code = self._generate_python_tests(trajectories, sut_source_path)
+                code, branch_test_map = self._generate_python_tests(
+                    trajectories, sut_source_path
+                )
         else:
             print("   ⚠️  Source non disponible — tests basés sur les contraintes")
-            code = self._generate_constraint_tests(trajectories)
+            code, branch_test_map = self._generate_constraint_tests(trajectories)
 
         test_file.write_text(code, encoding='utf-8')
         n = code.count('\ndef test_')
+        branch_n = code.count('\ndef test_branch_')
         print(f"✅ Generated: {test_file}")
-        print(f"   {n} test cases")
-        return test_file
+        print(f"   {n} test cases dont {branch_n} branch test(s)")
+        return test_file, branch_test_map
 
     # ── Mode Django ───────────────────────────────────────────────────
 
-    def _generate_django_tests(self, trajectories: List[Trajectory], root: Path) -> str:
-        analyzer = DjangoProjectAnalyzer(root)
-        django_root    = analyzer.django_root
+    def _generate_django_tests(
+        self,
+        trajectories: List[Trajectory],
+        root: Path,
+    ) -> Tuple[str, Dict[str, List[str]]]:
+
+        analyzer        = DjangoProjectAnalyzer(root)
+        django_root     = analyzer.django_root
         settings_module = analyzer.find_settings_module()
-        urls   = analyzer.extract_urls()
-        views  = analyzer.extract_views()
-        models = analyzer.extract_model_names()
+        urls            = analyzer.extract_urls()
+        views           = analyzer.extract_views()
+        models          = analyzer.extract_model_names()
+        ast_branches    = analyzer.extract_ast_branches()
 
         total_branches: set = set()
         for t in trajectories:
             total_branches.update(t.branches_covered)
 
+        # ── En-tête du fichier ────────────────────────────────────────
         parts = [textwrap.dedent(f'''\
             """
             Auto-generated Django tests — KIMVIEware Phase 4
@@ -359,12 +389,10 @@ class TestGenerator:
             import pytest
             from pathlib import Path
 
-            # ── Django root (dossier contenant manage.py) ─────────────
             DJANGO_ROOT = {str(django_root)!r}
             if DJANGO_ROOT not in sys.path:
                 sys.path.insert(0, DJANGO_ROOT)
 
-            # ── Installer les dépendances du projet si requirements.txt existe ──
             _req_file = Path(DJANGO_ROOT) / 'requirements.txt'
             if _req_file.exists():
                 try:
@@ -383,11 +411,8 @@ class TestGenerator:
 
             try:
                 import django
-                from django.conf import settings as _django_settings
-
                 django.setup()
 
-                # ── Corriger la DB si pas configurée (pas de DATABASE_URL) ──
                 try:
                     from django.conf import settings as _s
                     db = _s.DATABASES.get('default', {{}})
@@ -410,7 +435,6 @@ class TestGenerator:
                 except Exception:
                     pass
 
-                # ── Créer les tables en mémoire ───────────────────────────
                 try:
                     from django.test.utils import setup_test_environment
                     from django.core.management import call_command
@@ -426,13 +450,11 @@ class TestGenerator:
 
 
             def _client():
-                """Retourne un django.test.Client configuré ou None."""
                 if not DJANGO_AVAILABLE:
                     return None
                 try:
                     from django.test import Client
                     from django.conf import settings as _s
-                    # Ajouter 'testserver' à ALLOWED_HOSTS si nécessaire
                     if hasattr(_s, 'ALLOWED_HOSTS') and 'testserver' not in _s.ALLOWED_HOSTS:
                         _s.ALLOWED_HOSTS.append('testserver')
                     return Client()
@@ -442,70 +464,130 @@ class TestGenerator:
 
         ''')]
 
-        idx = 0
+        # ── Préparer les URLs nettoyées ───────────────────────────────
+        clean_urls: List[Dict] = []
+        for url_info in (urls[:15] if urls else []):
+            url_path = url_info['path']
+            clean    = re.sub(r'<[^>]+>', '1', url_path)
+            clean    = re.sub(r'\(\?P<[^>]+>[^)]+\)', '1', clean)
+            clean_urls.append({
+                'original': url_path,
+                'clean': clean,
+                'safe': _safe_id(url_path),
+                'has_params': bool(re.search(r'<|\d+$', url_path)),
+            })
 
-        # ── Tests par URL ─────────────────────────────────────────────
-        if urls:
-            for url_info in urls[:15]:
-                url_path = url_info['path']
-                # Remplacer <int:pk>, <str:slug>, (?P<pk>...) par '1'
-                clean = re.sub(r'<[^>]+>', '1', url_path)
-                clean = re.sub(r'\(\?P<[^>]+>[^)]+\)', '1', clean)
-                safe  = _safe_id(url_path)
+        if not clean_urls:
+            clean_urls = [
+                {'original': p, 'clean': p, 'safe': _safe_id(p), 'has_params': False}
+                for p in ['/api/', '/admin/', '/']
+            ]
 
-                parts.append(textwrap.dedent(f'''\
-                    def test_django_get_{safe}_{idx}():
-                        """GET {clean}"""
-                        if not DJANGO_AVAILABLE:
-                            pytest.skip("Django setup failed")
-                        response = _client().get({clean!r})
-                        assert response.status_code in [200, 301, 302, 400, 401, 403, 404, 405], \\
-                            f"GET {clean} → {{response.status_code}}"
+        branch_test_map: Dict[str, List[str]] = {}
+        global_idx = 0
 
+        # ══════════════════════════════════════════════════════════════
+        # Un bloc de tests par trajectoire
+        # ══════════════════════════════════════════════════════════════
+        for traj in trajectories:
+            safe_traj = _safe_id(traj.path_id)
+            branches  = list(traj.branches_covered)
 
-                '''))
-                idx += 1
+            parts.append(textwrap.dedent(f'''\
+                # ════════════════════════════════════════════════════════
+                # Trajectoire : {traj.path_id}
+                # Branches    : {branches}
+                # Contraintes : {traj.constraints}
+                # ════════════════════════════════════════════════════════
 
-                # POST uniquement sur les collections (pas les endpoints avec paramètres)
-                if not re.search(r'<|\d+$', url_path):
+            '''))
+
+            traj_tests: List[str] = []
+
+            # ── Tests HTTP par branche ────────────────────────────────
+            for bi, branch in enumerate(branches):
+                b_safe       = _safe_id(str(branch))
+                branch_label = f"logical:{branch[0]}→{branch[1]} (traj: {traj.path_id})"
+
+                # GET sur chaque URL
+                for ui, u in enumerate(clean_urls):
+                    test_name = f"test_traj_{safe_traj}_b{bi}_get_{ui}_{global_idx}"
+                    traj_tests.append(test_name)
                     parts.append(textwrap.dedent(f'''\
-                        def test_django_post_{safe}_{idx}():
-                            """POST {clean}"""
+                        def {test_name}():
+                            """
+                            Trajectoire : {traj.path_id}
+                            Branche     : {branch}
+                            Méthode     : GET {u['clean']}
+                            """
                             if not DJANGO_AVAILABLE:
                                 pytest.skip("Django setup failed")
-                            import json
-                            response = _client().post(
-                                {clean!r},
-                                data=json.dumps({{}}),
-                                content_type='application/json'
-                            )
-                            assert response.status_code in [200, 201, 301, 302, 400, 401, 403, 404, 405], \\
-                                f"POST {clean} → {{response.status_code}}"
+                            response = _client().get({u['clean']!r})
+                            assert response.status_code in [200, 301, 302, 400, 401, 403, 404, 405], \\
+                                f"Traj={traj.path_id!r} Branch={branch!r} GET {u['clean']} → {{response.status_code}}"
 
 
                     '''))
-                    idx += 1
-        else:
-            for path in ['/api/', '/admin/', '/']:
-                safe = _safe_id(path)
-                parts.append(textwrap.dedent(f'''\
-                    def test_django_get_{safe}_{idx}():
-                        """GET {path} (endpoint commun)"""
-                        if not DJANGO_AVAILABLE:
-                            pytest.skip("Django setup failed")
-                        response = _client().get({path!r})
-                        assert response.status_code in [200, 301, 302, 401, 403, 404, 405]
+                    global_idx += 1
+
+                # POST sur les URLs sans paramètres
+                for ui, u in enumerate(clean_urls):
+                    if not u['has_params']:
+                        test_name = f"test_traj_{safe_traj}_b{bi}_post_{ui}_{global_idx}"
+                        traj_tests.append(test_name)
+                        parts.append(textwrap.dedent(f'''\
+                            def {test_name}():
+                                """
+                                Trajectoire : {traj.path_id}
+                                Branche     : {branch}
+                                Méthode     : POST {u['clean']}
+                                """
+                                if not DJANGO_AVAILABLE:
+                                    pytest.skip("Django setup failed")
+                                import json
+                                response = _client().post(
+                                    {u['clean']!r},
+                                    data=json.dumps({{}}),
+                                    content_type='application/json'
+                                )
+                                assert response.status_code in [200, 201, 301, 302, 400, 401, 403, 404, 405], \\
+                                    f"Traj={traj.path_id!r} Branch={branch!r} POST {u['clean']} → {{response.status_code}}"
 
 
-                '''))
-                idx += 1
+                        '''))
+                        global_idx += 1
 
-        # ── Tests d'importabilité des views ───────────────────────────
+                branch_test_map.setdefault(branch_label, []).extend(traj_tests)
+
+            # ── Tests issus des contraintes de la trajectoire ─────────
+            for ci, constraint in enumerate(traj.constraints):
+                vals, assertion = self._constraint_to_assertion(constraint, ci)
+                if assertion:
+                    test_name = f"test_traj_{safe_traj}_constraint_{ci}_{global_idx}"
+                    traj_tests.append(test_name)
+                    setup = '\n'.join(
+                        f'    {var} = {val!r}' for var, val in vals.items()
+                    )
+                    parts.append(textwrap.dedent(f'''\
+                        def {test_name}():
+                            """
+                            Trajectoire : {traj.path_id}
+                            Contrainte  : {constraint!r}
+                            """
+{setup}
+                            assert {assertion}
+
+
+                    '''))
+                    global_idx += 1
+
+        # ── Tests d'importabilité des views (global, une seule fois) ──
+        parts.append('# ── Vérification globale des views ──────────────────────\n')
         for view_info in views[:5]:
             class_name = view_info['class']
             safe_class = _safe_id(class_name)
             parts.append(textwrap.dedent(f'''\
-                def test_django_view_exists_{safe_class}_{idx}():
+                def test_django_view_exists_{safe_class}_{global_idx}():
                     """Vérifie que {class_name} est importable."""
                     if not DJANGO_AVAILABLE:
                         pytest.skip("Django setup failed")
@@ -524,39 +606,69 @@ class TestGenerator:
 
 
             '''))
-            idx += 1
+            global_idx += 1
+
+        # ── Branches AST → mapping avec tous les tests générés ────────
+        all_traj_tests = list(dict.fromkeys(
+            t for tests in branch_test_map.values() for t in tests
+        ))
+        for b in ast_branches:
+            label = f"[{b['rel_path']}] if {b['condition']}"
+            branch_test_map[label] = list(all_traj_tests)
 
         parts.append(self._gen_trajectory_summary(trajectories))
-        return '\n'.join(parts)
+        return '\n'.join(parts), branch_test_map
 
     # ── Mode Python simple ────────────────────────────────────────────
 
-    def _generate_python_tests(self, trajectories: List[Trajectory], root: Path) -> str:
+    def _generate_python_tests(
+        self,
+        trajectories: List[Trajectory],
+        root: Path,
+    ) -> Tuple[str, Dict[str, List[str]]]:
+
         py_files = self._find_source_files(root)
-        parts = [self._make_header(trajectories, root, len(py_files))]
-        idx = 0
+        parts    = [self._make_header(trajectories, root, len(py_files))]
+        idx      = 0
+        branch_test_map: Dict[str, List[str]] = {}
+
         for py_file in py_files:
             analyzer = SourceAnalyzer(py_file)
             safe_rel = _safe_id(str(py_file.relative_to(root)).replace('.py', ''))
+
             parts.append(self._gen_script_test(py_file, root, safe_rel, idx))
             idx += 1
+
             for bi, branch in enumerate(analyzer.get_branches()):
+                test_name = f"test_branch_{safe_rel}_b{bi}_{idx}"
+                condition = branch['condition']
+                label     = f"[{py_file.name}:{bi}] if {condition}"
+                branch_test_map.setdefault(label, []).append(test_name)
                 parts.append(self._gen_branch_test(branch, py_file, safe_rel, bi, idx))
                 idx += 1
+
             for func in analyzer.get_functions()[:5]:
                 parts.append(self._gen_function_test(func, py_file, root, safe_rel, idx))
                 idx += 1
+
         parts.append(self._gen_trajectory_summary(trajectories))
-        return '\n'.join(parts)
+        return '\n'.join(parts), branch_test_map
 
     # ── Mode contraintes fallback ─────────────────────────────────────
 
-    def _generate_constraint_tests(self, trajectories: List[Trajectory]) -> str:
+    def _generate_constraint_tests(
+        self,
+        trajectories: List[Trajectory],
+    ) -> Tuple[str, Dict[str, List[str]]]:
+
         parts = [self._make_header(trajectories, None, 0)]
+        branch_test_map: Dict[str, List[str]] = {}
+
         for i, traj in enumerate(trajectories):
-            safe = _safe_id(traj.path_id)
+            safe      = _safe_id(traj.path_id)
+            test_name = f"test_trajectory_{safe}_{i}"
             lines = [
-                f'def test_trajectory_{safe}_{i}():',
+                f'def {test_name}():',
                 f'    """Trajectory: {traj.path_id} | Branches: {len(traj.branches_covered)}"""',
             ]
             for ci, c in enumerate(traj.constraints):
@@ -569,8 +681,13 @@ class TestGenerator:
                 lines.append(f'    assert {traj.is_feasible}')
             lines.extend(['', ''])
             parts.append('\n'.join(lines))
+
+            for b in traj.branches_covered:
+                label = f"logical:{b} (traj: {traj.path_id})"
+                branch_test_map.setdefault(label, []).append(test_name)
+
         parts.append(self._gen_trajectory_summary(trajectories))
-        return '\n'.join(parts)
+        return '\n'.join(parts), branch_test_map
 
     # ── Générateurs individuels ───────────────────────────────────────
 
@@ -590,8 +707,8 @@ class TestGenerator:
         ''')
 
     def _gen_branch_test(self, branch, py_file, safe_rel, bi, idx) -> str:
-        condition = branch['condition']
-        true_vals = branch['true_values']
+        condition  = branch['condition']
+        true_vals  = branch['true_values']
         false_vals = branch['false_values']
         lines = [f'def test_branch_{safe_rel}_b{bi}_{idx}():',
                  f'    """Branch: {condition!r} ({py_file.name})"""']

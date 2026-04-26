@@ -90,8 +90,8 @@ class ExecutorService(MicroserviceBase):
         tmpdir_path.mkdir(exist_ok=True)
 
         try:
-            # Step 1 — Générer les tests
-            test_file = self.test_generator.generate(
+            # Step 1 — Générer les tests (retourne aussi le branch_test_map)
+            test_file, branch_test_map = self.test_generator.generate(
                 trajectories=trajectories,
                 output_dir=tmpdir_path,
                 sut_source_path=sut_source_path,
@@ -105,6 +105,10 @@ class ExecutorService(MicroserviceBase):
                 sut_source_path=sut_source_path,
                 sut_info=sut_info,
             )
+
+            # Step 3 — Afficher le mapping branche → résultats réels
+            test_results = exec_stats.get('test_results', {})
+            self._print_branch_results(branch_test_map, test_results)
 
         except Exception as exc:
             self.logger.error(f"[{job_id}] Pipeline error: {exc}", exc_info=True)
@@ -141,6 +145,30 @@ class ExecutorService(MicroserviceBase):
     # ------------------------------------------------------------------
     # Résolution du chemin source
     # ------------------------------------------------------------------
+
+    def _print_branch_results(self, branch_test_map: dict, test_results: dict):
+        """
+        Affiche le mapping final :
+          Branch [condition]
+             └─ test_name  ✅ PASSED  ou  ❌ FAILED
+        """
+        if not branch_test_map:
+            return
+
+        SEP = '─' * 64
+        icons = {'PASSED': '✅', 'FAILED': '❌', 'SKIPPED': '⏭️', 'ERROR': '💥'}
+
+        print(f"\n🎯 Branches → Résultats des tests")
+        print(f"   {SEP}")
+
+        for branch_label, tests in branch_test_map.items():
+            print(f"   Branch [{branch_label}]")
+            for test_name in tests:
+                status = test_results.get(test_name, 'UNKNOWN')
+                icon = icons.get(status, '❓')
+                print(f"      └─ {test_name}  {icon} {status}")
+
+        print(f"   {SEP}\n")
 
     def _detect_framework(self, source_path: Path) -> str | None:
         """Détecte le framework depuis le code source directement."""
