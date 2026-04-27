@@ -26,6 +26,13 @@ class TestGenerator:
         
         output_dir.mkdir(parents=True, exist_ok=True)
         test_file = output_dir / 'test_generated.py'
+        print("\n🧬 === TRAJECTORIES RECEIVED ===")
+
+        for i, traj in enumerate(trajectories):
+            print(f"\n🔹 Trajectory {i}")
+            print(f"   ID: {traj.path_id}")
+            print(f"   Condition: {traj.path_condition}")
+            print(f"   Branches covered: {len(traj.branches_covered)}")
         
         print(f"\n🔧 Generating tests from {len(trajectories)} trajectories...")
         
@@ -33,7 +40,8 @@ class TestGenerator:
         test_code = self._generate_pytest_code(trajectories)
         
         test_file.write_text(test_code)
-        
+       
+
         print(f"✅ Generated: {test_file}")
         print(f"   {len(trajectories)} test cases")
         
