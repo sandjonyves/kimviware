@@ -1,360 +1,372 @@
 """
-Python Extractor - Symbolic Execution with Static Analysis
+Python Extractor — Vraie analyse symbolique par AST
+=====================================================
+Chaque trajectoire correspond à UN chemin réel dans le code :
+  - branche True ou False d'un if/elif/else
+  - corps d'une boucle for/while
+  - bloc try ou except
+
+Les contraintes contiennent les VRAIES conditions du code source
+(ex: "a > b", "x > 0 and y < 10") pas des variables inventées.
 """
 import ast
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Dict, Any, Optional
 import logging
 
-from .base_extractor import ExtractorBase
 from kimvieware_shared.models import Trajectory
 
 logger = logging.getLogger(__name__)
 
-class PythonExtractor(ExtractorBase):
+
+# ---------------------------------------------------------------------------
+# Représentation interne d'un nœud de branche
+# ---------------------------------------------------------------------------
+
+class BranchNode:
+    """Un point de branchement dans le code source."""
+    _counter = 0
+
+    def __init__(self, kind: str, condition: str, line: int,
+                 true_block_id: int, false_block_id: Optional[int] = None):
+        BranchNode._counter += 1
+        self.id = BranchNode._counter
+        self.kind = kind            # 'if', 'elif', 'for', 'while', 'try'
+        self.condition = condition  # vraie condition extraite de l'AST
+        self.line = line
+        self.true_block_id = true_block_id
+        self.false_block_id = false_block_id  # None si pas de else
+
+    def __repr__(self):
+        return f"Branch({self.kind}@{self.line}: {self.condition})"
+
+
+# ---------------------------------------------------------------------------
+# Extracteur de chemins par AST
+# ---------------------------------------------------------------------------
+
+class RealPathExtractor(ast.NodeVisitor):
     """
-    Python symbolic execution extractor
-    
-    Uses AST analysis to:
-    1. Build control flow graph
-    2. Identify branch points
-    3. Generate execution paths
-    4. Extract constraints
+    Parcourt l'AST Python et construit tous les chemins d'exécution réels.
+
+    Stratégie :
+      Pour chaque nœud If/For/While/Try rencontré :
+        - Chemin True  : condition satisfaite → corps du if / boucle
+        - Chemin False : condition non satisfaite → bloc else ou suite
+
+    On génère une trajectoire par combinaison de décisions de branches.
     """
-    
-    def __init__(self, timeout: int = 120, max_paths: int = 1000000):
-        self.timeout = timeout
-        self.max_paths = max_paths  # NO LIMIT - generate all paths
-    
-    def extract_paths(self, service_path: Path) -> List[Trajectory]:
-        """Extract symbolic paths from Python service"""
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f" Python Symbolic Execution Analysis")
-        logger.info(f"{'='*60}")
-        logger.info(f" Service: {service_path}")
-        
-        # Debug: list directory contents
-        if service_path.exists():
-            logger.debug(f"\n📁 Directory contents:")
-            for item in service_path.iterdir():
-                logger.debug(f"    - {item.name}{'/' if item.is_dir() else ''}")
+
+    def __init__(self, source_file: Path, max_paths: int = 1000):
+        self.source_file = source_file
+        self.max_paths = max_paths
+        self.branches: List[BranchNode] = []
+        self._block_counter = 0
+        self.trajectories: List[Trajectory] = []
+
+    def _new_block(self) -> int:
+        self._block_counter += 1
+        return self._block_counter * 10  # adresses espacées pour lisibilité
+
+    def extract(self) -> List[Trajectory]:
+        """Point d'entrée principal."""
+        try:
+            source = self.source_file.read_text(encoding='utf-8', errors='replace')
+            tree = ast.parse(source, filename=str(self.source_file))
+        except SyntaxError as e:
+            logger.warning(f"SyntaxError in {self.source_file}: {e}")
+            return []
+
+        # Collecter toutes les branches du fichier
+        self._collect_branches(tree)
+
+        if not self.branches:
+            # Fichier sans branche — une seule trajectoire linéaire
+            return [self._make_linear_trajectory(source)]
+
+        # Générer les trajectoires par combinaisons de branches
+        return self._generate_trajectories()
+
+    # ------------------------------------------------------------------
+    # Collecte des branches réelles
+    # ------------------------------------------------------------------
+
+    def _collect_branches(self, tree: ast.AST):
+        """Parcourt l'AST et collecte toutes les branches réelles."""
+        BranchNode._counter = 0
+        self._visit_node(tree)
+
+    def _visit_node(self, node: ast.AST):
+        """Visite récursive de l'AST."""
+        if isinstance(node, ast.If):
+            self._handle_if(node)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            self._handle_for(node)
+        elif isinstance(node, ast.While):
+            self._handle_while(node)
+        elif isinstance(node, ast.Try):
+            self._handle_try(node)
         else:
-            logger.error(f"\n❌ Service path does not exist!")
-            return []
-        
-        # Find entry point
-        entry = self.find_entry_point(service_path)
-        if not entry:
-            logger.warning(" ❌ No entry point found")
-            return []
-        
-        logger.info(f"✅ Entry: {entry.relative_to(service_path)}")
-        
-        # Analyze all Python files
-        py_files = self._find_python_files(service_path)
-        logger.info(f"📊 Files: {len(py_files)}")
-        
-        # Extract control flow info
-        analysis = self._analyze_control_flow(py_files)
-        
-        logger.info(f"\n Analysis Results:")
-        logger.info(f"   Functions: {analysis['functions']}")
-        logger.info(f"   Branch points: {analysis['branches']}")
-        logger.info(f"   Loops: {analysis['loops']}")
-        logger.info(f"   Conditions: {analysis['conditions']}")
-        
-        # Generate trajectories
-        trajectories = self._generate_trajectories(analysis)
-        
-        logger.info(f"\n Generated {len(trajectories)} trajectories")
-        logger.info(f"{'='*60}\n")
-        
-        return trajectories
-    
-    def find_entry_point(self, service_path: Path) -> Path:
-        """Find main.py or app.py - improved search"""
-        candidates = [
-            service_path / 'src' / 'main.py',
-            service_path / 'main.py',
-            service_path / 'app.py',
-            service_path / '__main__.py',
-            service_path / 'run.py',
-            service_path / 'start.py',
-        ]
-        
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_file():
-                logger.info(f"Found entry point: {candidate}")
-                return candidate
-        
-        # Search recursively for ANY Python file (not test)
-        python_files = []
-        for f in service_path.rglob('*.py'):
-            # Skip test files, __pycache__, venv
-            if any(x in str(f) for x in ['__pycache__', 'test_', '.venv', 'venv', '__init__.py', 'setup.py']):
-                continue
-            python_files.append(f)
-        
-        if python_files:
-            # Prefer files in src/ or root
-            for f in python_files:
-                if 'src' in str(f) or str(f).count('/') == str(service_path).count('/') + 1:
-                    logger.info(f"Found entry point (recursive): {f}")
-                    return f
-            
-            # If nothing in src/, use first found
-            logger.info(f"Found entry point (first): {python_files[0]}")
-            return python_files[0]
-        
-        logger.warning(f"No Python files found in {service_path}")
-        return None
-    
-    def _find_python_files(self, service_path: Path) -> List[Path]:
-        """Find all Python source files while ignoring heavy directories"""
-        py_files = []
-        # Directories to strictly ignore
-        ignore_dirs = {
-            'venv', '.venv', 'env', '.env', 'node_modules', 
-            '__pycache__', '.git', '.pytest_cache', '.idea', '.vscode',
-            'site-packages', 'dist', 'build'
-        }
-        
-        for f in service_path.rglob('*.py'):
-            # Check if any part of the path is in the ignore list
-            path_parts = set(f.parts)
-            if any(ignore in path_parts for ignore in ignore_dirs):
-                continue
-            
-            # Skip test files if needed
-            if 'test_' in f.name or '_test' in f.name:
-                continue
-                
-            py_files.append(f)
-        
-        return py_files
-    
-    def _analyze_control_flow(self, py_files: List[Path]) -> dict:
-        """
-        Analyze control flow structures with detailed metrics
-        
-        Returns:
-            Dict with counts of:
-            - functions
-            - branches (if/elif)
-            - loops (for/while)
-            - conditions
-            - function calls
-            - nested_depth (profondeur d'imbrication)
-        """
-        analysis = {
-            'functions': 0,
-            'branches': 0,
-            'loops': 0,
-            'conditions': 0,
-            'calls': 0,
-            'complexity': 0,
-            'nested_depth': 0,
-            'exception_handlers': 0,
-            'switch_cases': 0,
-            'recursion_candidates': 0
-        }
-        
-        for py_file in py_files:
-            try:
-                source = py_file.read_text()
-                tree = ast.parse(source)
-                
-                # Analyze nesting depth
-                max_depth = self._get_max_nesting_depth(tree)
-                analysis['nested_depth'] = max(analysis['nested_depth'], max_depth)
-                
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        analysis['functions'] += 1
-                        # Check for recursion
-                        if self._is_recursive(node):
-                            analysis['recursion_candidates'] += 1
-                    
-                    elif isinstance(node, ast.If):
-                        analysis['branches'] += 1
-                        analysis['conditions'] += 1
-                        # elif adds more branches
-                        analysis['branches'] += len(node.orelse) if node.orelse else 0
-                    
-                    elif isinstance(node, (ast.For, ast.While)):
-                        analysis['loops'] += 1
-                        analysis['conditions'] += 1
-                    
-                    elif isinstance(node, ast.Call):
-                        analysis['calls'] += 1
-                    
-                    elif isinstance(node, (ast.Compare, ast.BoolOp)):
-                        analysis['conditions'] += 1
-                    
-                    elif isinstance(node, ast.Try):
-                        analysis['exception_handlers'] += len(node.handlers)
-                
-            except Exception as e:
-                logger.warning(f"Failed to parse {py_file}: {e}")
-        
-        # Cyclomatic complexity estimate (amélioré)
-        analysis['complexity'] = (
-            analysis['branches'] + 
-            analysis['loops'] + 
-            analysis['exception_handlers'] +
-            analysis['recursion_candidates'] + 1
+            for child in ast.iter_child_nodes(node):
+                self._visit_node(child)
+
+    def _handle_if(self, node: ast.If):
+        try:
+            condition = ast.unparse(node.test)
+        except Exception:
+            condition = "unknown_condition"
+
+        true_id = self._new_block()
+        false_id = self._new_block() if node.orelse else None
+
+        branch = BranchNode(
+            kind='if',
+            condition=condition,
+            line=node.lineno,
+            true_block_id=true_id,
+            false_block_id=false_id
         )
-        
-        return analysis
-    
-    def _get_max_nesting_depth(self, node, depth: int = 0) -> int:
-        """Calculate maximum nesting depth"""
-        max_d = depth
-        
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.If, ast.For, ast.While, ast.Try, ast.With)):
-                child_depth = self._get_max_nesting_depth(child, depth + 1)
-                max_d = max(max_d, child_depth)
-            else:
-                child_depth = self._get_max_nesting_depth(child, depth)
-                max_d = max(max_d, child_depth)
-        
-        return max_d
-    
-    def _is_recursive(self, func_node: ast.FunctionDef) -> bool:
-        """Check if function calls itself"""
-        for node in ast.walk(func_node):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    if node.func.id == func_node.name:
-                        return True
-        return False
-    
-    def _generate_trajectories(self, analysis: dict) -> List[Trajectory]:
-        """
-        Generate trajectories based on ACTUAL code complexity.
-        NOTE: This is a SIMULATED trajectory generation based on static code metrics,
-        not actual dynamic symbolic execution. It produces diverse trajectories
-        representative of potential paths.
-        """
-        
-        # Calculate realistic path count based on ACTUAL metrics
-        branch_count = analysis['branches']
-        loop_count = analysis['loops']
-        func_count = analysis['functions']
-        nested_depth = analysis['nested_depth']
-        exception_count = analysis['exception_handlers']
-        
-        # Formule améliorée basée sur complexité réelle
-        # Au lieu de 2^branches, utiliser une formule plus réaliste
-        base_paths = max(1, branch_count)
-        loop_multiplier = max(1, loop_count * 0.5)  # Les boucles doublent les chemins potentiels
-        nesting_multiplier = 2 ** min(nested_depth, 6)  # Profondeur d'imbrication
-        exception_multiplier = 1 + (exception_count * 0.3)  # Gestionnaires d'exceptions
-        
-        # Calcul réaliste du nombre de chemins
-        theoretical_paths = int(
-            base_paths * 
-            loop_multiplier * 
-            nesting_multiplier * 
-            exception_multiplier
+        self.branches.append(branch)
+
+        # Visiter les sous-blocs pour trouver les branches imbriquées
+        for child in node.body:
+            self._visit_node(child)
+        for child in node.orelse:
+            self._visit_node(child)
+
+    def _handle_for(self, node: ast.For):
+        try:
+            target = ast.unparse(node.target)
+            iter_ = ast.unparse(node.iter)
+            condition = f"{target} in {iter_}"
+        except Exception:
+            condition = "for_loop"
+
+        true_id = self._new_block()
+        false_id = self._new_block()  # boucle non exécutée (itérable vide)
+
+        branch = BranchNode(
+            kind='for',
+            condition=condition,
+            line=node.lineno,
+            true_block_id=true_id,
+            false_block_id=false_id
         )
-        
-        # NO LIMIT - generate ALL theoretical paths
-        # Plus le code est complexe, plus on extrait de chemins
-        num_paths = theoretical_paths
-        
-        logger.info(f"\n🔬 Generating trajectories (REAL complexity analysis):")
-        logger.info(f"   Functions: {func_count}")
-        logger.info(f"   Branch points: {branch_count}")
-        logger.info(f"   Loops: {loop_count}")
-        logger.info(f"   Nesting depth: {nested_depth}")
-        logger.info(f"   Exception handlers: {exception_count}")
-        logger.info(f"   Calculated formula:")
-        logger.info(f"     = {base_paths} * {loop_multiplier:.1f} * {nesting_multiplier} * {exception_multiplier:.1f}")
-        logger.info(f"     = {theoretical_paths} (theoretical)")
-        logger.info(f"   Actual paths (NO LIMIT): {num_paths}")
-        
+        self.branches.append(branch)
+
+        for child in node.body:
+            self._visit_node(child)
+
+    def _handle_while(self, node: ast.While):
+        try:
+            condition = ast.unparse(node.test)
+        except Exception:
+            condition = "while_condition"
+
+        true_id = self._new_block()
+        false_id = self._new_block()
+
+        branch = BranchNode(
+            kind='while',
+            condition=condition,
+            line=node.lineno,
+            true_block_id=true_id,
+            false_block_id=false_id
+        )
+        self.branches.append(branch)
+
+        for child in node.body:
+            self._visit_node(child)
+
+    def _handle_try(self, node: ast.Try):
+        true_id = self._new_block()   # try réussi
+        false_id = self._new_block()  # exception levée
+
+        handlers = [h.type.id if h.type and isinstance(h.type, ast.Name) else 'Exception'
+                    for h in node.handlers]
+        condition = f"try (except {', '.join(handlers)})" if handlers else "try"
+
+        branch = BranchNode(
+            kind='try',
+            condition=condition,
+            line=node.lineno,
+            true_block_id=true_id,
+            false_block_id=false_id
+        )
+        self.branches.append(branch)
+
+        for child in node.body:
+            self._visit_node(child)
+        for handler in node.handlers:
+            for child in handler.body:
+                self._visit_node(child)
+
+    # ------------------------------------------------------------------
+    # Génération des trajectoires
+    # ------------------------------------------------------------------
+
+    def _generate_trajectories(self) -> List[Trajectory]:
+        """
+        Génère une trajectoire par chemin possible.
+        Chaque trajectoire représente une combinaison de décisions (True/False)
+        pour chaque branche du code.
+        """
         trajectories = []
-        
-        for i in range(num_paths):
-            # Create branch decisions
-            branch_binary = format(i, f'0{max(1, branch_count)}b') if branch_count > 0 else '0'
-            loop_binary = format(i % (2 ** min(loop_count, 4)), f'0{min(loop_count, 4)}b') if loop_count > 0 else '0'
-            
-            # Vary path length based on nesting depth
-            base_length = 5 + nested_depth * 3
-            path_length = base_length + (i % 10)
-            
-            # Create more diverse block IDs
-            complexity_group = i // max(1, (num_paths // 5))
-            base_block = 10000 + complexity_group * 1000 + (i % 200) * 5
-            
-            basic_blocks = [base_block + j * 10 for j in range(path_length)]
-            
-            # Generate diverse constraints based on branch decisions
+        n = len(self.branches)
+
+        # Cap : 2^n chemins max mais limité à max_paths
+        max_combos = min(self.max_paths, 2 ** min(n, 12))
+
+        for i in range(max_combos):
+            # Décision binaire pour chaque branche (bit i = True/False)
+            decisions = [(i >> j) & 1 for j in range(n)]
+
             constraints = []
-            constraint_id = 0
-            
-            # Constraints from branches
-            for j, decision in enumerate(branch_binary[:min(len(branch_binary), 12)]):
-                var = f"x_{constraint_id}"
-                threshold = (i % 10) + (j % 5)
-                if decision == '1':
-                    constraints.append(f"{var} > {threshold}")
+            basic_blocks = []
+            branches_covered: Set[Tuple[int, int]] = set()
+            cost = 0.0
+
+            prev_block = 0
+
+            for j, branch in enumerate(self.branches):
+                took_true = decisions[j] == 1
+
+                if took_true:
+                    constraints.append(branch.condition)
+                    block_id = branch.true_block_id
                 else:
-                    constraints.append(f"{var} <= {threshold}")
-                constraint_id += 1
-            
-            # Constraints from loops
-            for j, decision in enumerate(loop_binary[:min(len(loop_binary), 6)]):
-                var = f"loop_{constraint_id}"
-                bound = 5 + (i % 20)
-                if decision == '1':
-                    constraints.append(f"{var} < {bound}")
-                else:
-                    constraints.append(f"{var} >= {bound}")
-                constraint_id += 1
-            
-            # Additional constraints from nesting depth
-            for d in range(min(nested_depth, 3)):
-                var = f"nest_{d}"
-                constraints.append(f"{var} in range({d}, {d+10})")
-            
+                    # Négation de la condition
+                    neg = self._negate(branch.condition)
+                    constraints.append(neg)
+                    block_id = branch.false_block_id if branch.false_block_id else branch.true_block_id + 1
+
+                basic_blocks.append(block_id)
+                branches_covered.add((prev_block, block_id))
+                prev_block = block_id
+                cost += 0.5 + (0.1 * branch.line)
+
             path_condition = " AND ".join(constraints) if constraints else "true"
-            
-            # Generate branch coverage
-            branches = set()
-            for j in range(len(basic_blocks) - 1):
-                branches.add((basic_blocks[j], basic_blocks[j+1]))
-            
-            # Add cross-block branches based on complexity
-            num_cross_branches = min(len(basic_blocks) // 3, 5)
-            for j in range(num_cross_branches):
-                offset = (i + j * 3) % (len(basic_blocks) - 1)
-                next_offset = (offset + 2 + (i % 3)) % len(basic_blocks)
-                branches.add((basic_blocks[offset], basic_blocks[next_offset]))
-            
-            # Cost reflects actual path complexity
-            cost = (
-                len(constraints) * 0.2 +
-                len(basic_blocks) * 0.1 +
-                len(branches) * 0.05 +
-                nested_depth * 0.15 +
-                (i % 10) * 0.01
-            )
-            
+
             traj = Trajectory(
                 path_id=f"py_path_{i:05d}",
                 basic_blocks=basic_blocks,
                 path_condition=path_condition,
-                branches_covered=branches,
+                branches_covered=branches_covered,
                 constraints=constraints,
                 cost=round(cost, 3),
                 is_feasible=True
             )
-            
             trajectories.append(traj)
-        
+
         return trajectories
+
+    def _make_linear_trajectory(self, source: str) -> Trajectory:
+        """Trajectoire unique pour un fichier sans branche."""
+        lines = source.splitlines()
+        return Trajectory(
+            path_id="py_path_00000",
+            basic_blocks=[10, 20],
+            path_condition="true",
+            branches_covered=set(),
+            constraints=[],
+            cost=float(len(lines)),
+            is_feasible=True
+        )
+
+    @staticmethod
+    def _negate(condition: str) -> str:
+        """Négation simple d'une condition."""
+        # Conditions simples à inverser directement
+        negations = {
+            '>': '<=', '>=': '<', '<': '>=', '<=': '>',
+            '==': '!=', '!=': '=='
+        }
+        for op, neg_op in negations.items():
+            if f' {op} ' in condition and '==' not in condition.replace(op, ''):
+                return condition.replace(f' {op} ', f' {neg_op} ', 1)
+        return f"not ({condition})"
+
+
+# ---------------------------------------------------------------------------
+# Extracteur principal
+# ---------------------------------------------------------------------------
+
+class PythonExtractor:
+    """
+    Python symbolic execution extractor — vraie analyse AST.
+
+    Chaque trajectoire représente un chemin réel avec les vraies conditions
+    du code source comme contraintes.
+    """
+
+    def __init__(self, timeout: int = 120, max_paths: int = 1000):
+        self.timeout = timeout
+        self.max_paths = max_paths
+
+    def extract_paths(self, service_path: Path) -> List[Trajectory]:
+        """Extraire les chemins symboliques depuis un projet Python."""
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f" Python Symbolic Execution — Vraie analyse AST")
+        logger.info(f"{'='*60}")
+        logger.info(f" Service: {service_path}")
+
+        if not service_path.exists():
+            logger.error(f"Path does not exist: {service_path}")
+            return []
+
+        py_files = self._find_python_files(service_path)
+        logger.info(f"📊 Files: {len(py_files)}")
+
+        all_trajectories = []
+        file_path_budget = max(1, self.max_paths // max(1, len(py_files)))
+
+        for py_file in py_files:
+            logger.info(f"  Analyzing {py_file.name}...")
+            extractor = RealPathExtractor(py_file, max_paths=file_path_budget)
+            trajs = extractor.extract()
+
+            # Préfixer les path_ids avec le nom du fichier
+            stem = py_file.stem
+            for j, t in enumerate(trajs):
+                t.path_id = f"py_{stem}_{j:04d}"
+
+            all_trajectories.extend(trajs)
+            logger.info(f"    → {len(trajs)} trajectoires (branches: {len(extractor.branches)})")
+
+        # Limiter au max global
+        if len(all_trajectories) > self.max_paths:
+            all_trajectories = all_trajectories[:self.max_paths]
+
+        logger.info(f"\n✅ Total: {len(all_trajectories)} trajectoires extraites")
+        logger.info(f"{'='*60}\n")
+
+        return all_trajectories
+
+    def _find_python_files(self, service_path: Path) -> List[Path]:
+        """Trouver les fichiers Python source (hors venv, tests, cache)."""
+        ignore_dirs = {
+            'venv', '.venv', 'env', '.env', 'node_modules',
+            '__pycache__', '.git', '.pytest_cache', '.idea', '.vscode',
+            'site-packages', 'dist', 'build', 'migrations'
+        }
+        py_files = []
+        for f in service_path.rglob('*.py'):
+            if any(p in ignore_dirs for p in f.parts):
+                continue
+            if 'test_' in f.name or '_test' in f.name or f.name == '__init__.py':
+                continue
+            py_files.append(f)
+        return sorted(py_files)
+
+    # Conservé pour compatibilité avec ExtractorBase
+    def find_entry_point(self, service_path: Path) -> Optional[Path]:
+        candidates = ['main.py', 'app.py', '__main__.py', 'run.py', 'start.py']
+        for name in candidates:
+            p = service_path / name
+            if p.exists():
+                return p
+        for f in service_path.rglob('*.py'):
+            if '__pycache__' not in str(f):
+                return f
+        return None

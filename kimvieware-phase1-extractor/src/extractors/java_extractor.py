@@ -1,10 +1,14 @@
 """
-Java Trajectory Extractor using javalang
-Parses Java AST and extracts execution paths
+Java Extractor — Vraie analyse symbolique par javalang AST
+===========================================================
+Chaque trajectoire correspond à UN chemin réel :
+  - Les contraintes contiennent les VRAIES conditions Java
+    (ex: "x > 0", "obj != null", "i < list.size()")
+  - path_condition est la conjonction logique des conditions du chemin.
 """
 import javalang
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Set, Tuple, Optional
 import logging
 from dataclasses import dataclass, field
 
@@ -15,288 +19,324 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CFGNode:
-    """Control Flow Graph Node for Java"""
+    """Nœud du Control Flow Graph Java."""
     node_id: int
     kind: str
     location: str
+    condition: str = ""          # VRAIE condition extraite du code Java
     children: List[int] = field(default_factory=list)
     is_branch: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Sérialisation des expressions javalang → string lisible
+# ---------------------------------------------------------------------------
+
+def serialize_expr(node) -> str:
+    """
+    Convertit un nœud d'expression javalang en string lisible.
+    Couvre les cas courants : comparaisons, opérateurs logiques, appels, etc.
+    """
+    if node is None:
+        return "null"
+
+    t = type(node).__name__
+
+    if t == 'BinaryOperation':
+        left = serialize_expr(node.operandl)
+        right = serialize_expr(node.operandr)
+        return f"{left} {node.operator} {right}"
+
+    elif t == 'MemberReference':
+        qualifier = f"{node.qualifier}." if node.qualifier else ""
+        return f"{qualifier}{node.member}"
+
+    elif t == 'Literal':
+        return str(node.value)
+
+    elif t == 'MethodInvocation':
+        qualifier = f"{node.qualifier}." if node.qualifier else ""
+        args = ", ".join(serialize_expr(a) for a in (node.arguments or []))
+        return f"{qualifier}{node.member}({args})"
+
+    elif t == 'ClassCreator':
+        args = ", ".join(serialize_expr(a) for a in (node.arguments or []))
+        return f"new {node.type.name}({args})"
+
+    elif t == 'ArrayAccess':
+        return f"{serialize_expr(node.postfix_operators[0] if node.postfix_operators else node)}[{serialize_expr(node.index)}]"
+
+    elif t == 'Cast':
+        return f"({node.type.name}) {serialize_expr(node.expression)}"
+
+    elif t == 'TernaryExpression':
+        cond = serialize_expr(node.condition)
+        if_true = serialize_expr(node.if_true)
+        if_false = serialize_expr(node.if_false)
+        return f"{cond} ? {if_true} : {if_false}"
+
+    elif t == 'Assignment':
+        return f"{serialize_expr(node.expressionl)} {node.type} {serialize_expr(node.value)}"
+
+    elif hasattr(node, 'value'):
+        return str(node.value)
+
+    elif hasattr(node, 'name'):
+        return str(node.name)
+
+    return t  # fallback: nom du type de nœud
+
+
+def serialize_condition(node) -> str:
+    """Sérialise la condition d'un if/while/for."""
+    if node is None:
+        return "true"
+    try:
+        return serialize_expr(node)
+    except Exception:
+        return type(node).__name__
+
+
+# ---------------------------------------------------------------------------
+# Extracteur principal
+# ---------------------------------------------------------------------------
+
 class JavaExtractor:
     """
-    Extract execution paths from Java code using javalang
-    
-    Strategy:
-    1. Parse Java files with javalang
-    2. Build Control Flow Graph (CFG)
-    3. Identify branch points (if, while, for, switch, try-catch)
-    4. Generate paths through CFG
-    5. Extract constraints from conditions
+    Extrait les chemins d'exécution depuis du code Java avec javalang.
+
+    Améliorations vs version précédente :
+      - serialize_expr() convertit les nœuds javalang en conditions lisibles
+      - path_condition = vraie formule logique du chemin
+      - constraints = vraies conditions Java (pas juste "IfStatement@line")
     """
-    
+
     BRANCH_TYPES = {
-        'IfStatement',
-        'WhileStatement',
-        'ForStatement',
-        'DoStatement',
-        'SwitchStatement',
-        'TryStatement',
-        'ConditionalExpression'
+        'IfStatement', 'WhileStatement', 'ForStatement',
+        'DoStatement', 'SwitchStatement', 'TryStatement',
+        'EnhancedForStatement'
     }
-    
+
     def __init__(self, max_paths: int = 100):
         self.max_paths = max_paths
-        self.cfg_nodes = []
         self.next_node_id = 0
-    
+
     def extract_paths(self, source_dir: Path) -> List[Trajectory]:
-        """
-        Extract all execution paths from Java source directory
-        
-        Args:
-            source_dir: Directory containing .java files
-            
-        Returns:
-            List of Trajectory objects
-        """
         logger.info(f"🔍 Extracting Java paths from {source_dir}")
-        
-        # Find all Java files
+
         java_files = list(source_dir.rglob("*.java"))
-        
         if not java_files:
             logger.warning("No Java source files found")
             return []
-        
+
         logger.info(f"Found {len(java_files)} .java files")
-        
         all_trajectories = []
-        
-        # Process each Java file
+
         for java_file in java_files:
             logger.info(f"Processing {java_file.name}...")
-            
             try:
-                trajectories = self._extract_from_file(java_file)
-                all_trajectories.extend(trajectories)
-                logger.info(f"  → {len(trajectories)} paths extracted")
-                
+                trajs = self._extract_from_file(java_file)
+                all_trajectories.extend(trajs)
+                logger.info(f"  → {len(trajs)} paths extracted")
             except Exception as e:
                 logger.error(f"Error processing {java_file}: {e}")
-                continue
-        
+
         logger.info(f"✅ Total paths extracted: {len(all_trajectories)}")
-        
-        # Limit to max_paths
+
         if len(all_trajectories) > self.max_paths:
-            logger.info(f"Limiting to {self.max_paths} paths")
             all_trajectories = all_trajectories[:self.max_paths]
-        
+
         return all_trajectories
-    
+
     def _extract_from_file(self, file_path: Path) -> List[Trajectory]:
-        """Extract paths from a single Java file"""
-        
-        # Parse Java file
         try:
-            code = file_path.read_text(encoding='utf-8')
+            code = file_path.read_text(encoding='utf-8', errors='replace')
             tree = javalang.parse.parse(code)
         except Exception as e:
             logger.error(f"Failed to parse {file_path}: {e}")
             return []
-        
+
         trajectories = []
-        
-        # Find all method declarations
-        methods = []
-        for path, node in tree.filter(javalang.tree.MethodDeclaration):
-            methods.append(node)
-        
+        methods = [node for _, node in tree.filter(javalang.tree.MethodDeclaration)]
         logger.info(f"  Found {len(methods)} methods")
-        
-        # Extract paths from each method
+
         for method in methods:
-            method_name = method.name
-            logger.debug(f"    Analyzing method: {method_name}")
-            
-            # Build CFG for method
             cfg = self._build_cfg(method)
-            
-            # Generate paths through CFG
-            method_paths = self._generate_paths_from_cfg(cfg, method_name)
-            
-            # Convert to Trajectory objects
-            for i, path in enumerate(method_paths):
-                traj = self._path_to_trajectory(path, method_name, i)
+            paths = self._generate_paths(cfg, method.name)
+            for i, path in enumerate(paths):
+                traj = self._path_to_trajectory(path, method.name, i)
                 trajectories.append(traj)
-        
+
         return trajectories
-    
+
+    # ------------------------------------------------------------------
+    # Construction du CFG avec vraies conditions
+    # ------------------------------------------------------------------
+
     def _build_cfg(self, method_node) -> List[CFGNode]:
-        """Build Control Flow Graph for a Java method"""
-        
-        cfg = []
+        cfg: List[CFGNode] = []
         self.next_node_id = 0
-        
-        def create_node(node, is_branch=False):
-            """Create CFG node"""
+
+        def create_node(node, is_branch=False, condition="") -> int:
             node_id = self.next_node_id
             self.next_node_id += 1
-            
             kind = type(node).__name__
-            location = f"{getattr(node, 'position', 'unknown')}"
-            
-            cfg_node = CFGNode(
+            loc = str(getattr(node, 'position', 'unknown'))
+            cfg.append(CFGNode(
                 node_id=node_id,
                 kind=kind,
-                location=location,
+                location=loc,
+                condition=condition,
                 children=[],
                 is_branch=is_branch
-            )
-            
-            cfg.append(cfg_node)
+            ))
             return node_id
-        
-        def visit(node, parent_id=None):
-            """Build CFG recursively"""
-            
+
+        def visit(node, parent_id=None) -> Optional[int]:
             if node is None:
                 return None
-            
+
             node_type = type(node).__name__
             is_branch = node_type in self.BRANCH_TYPES
-            
-            current_id = create_node(node, is_branch)
-            
-            # Link to parent
+
+            # Extraire la vraie condition
+            condition = ""
+            if node_type == 'IfStatement':
+                condition = serialize_condition(getattr(node, 'condition', None))
+            elif node_type == 'WhileStatement':
+                condition = serialize_condition(getattr(node, 'condition', None))
+            elif node_type == 'ForStatement':
+                cond = getattr(node, 'condition', None)
+                condition = serialize_condition(cond) if cond else "for_init"
+            elif node_type == 'EnhancedForStatement':
+                var = getattr(node, 'var', None)
+                iter_ = getattr(node, 'iterable', None)
+                var_name = getattr(var, 'name', 'var') if var else 'var'
+                iter_str = serialize_condition(iter_)
+                condition = f"{var_name} : {iter_str}"
+            elif node_type == 'DoStatement':
+                condition = serialize_condition(getattr(node, 'condition', None))
+            elif node_type == 'TryStatement':
+                catches = getattr(node, 'catches', []) or []
+                exc_types = []
+                for c in catches:
+                    if hasattr(c, 'parameter') and hasattr(c.parameter, 'types'):
+                        exc_types.extend(c.parameter.types)
+                condition = f"try (catches: {', '.join(exc_types)})" if exc_types else "try"
+
+            current_id = create_node(node, is_branch, condition)
+
             if parent_id is not None:
                 cfg[parent_id].children.append(current_id)
-            
-            # Special handling for branch statements
+
+            # Traversée structurée
             if node_type == 'IfStatement':
-                # Condition
-                if hasattr(node, 'condition'):
-                    visit(node.condition, current_id)
-                # Then statement
-                if hasattr(node, 'then_statement'):
-                    visit(node.then_statement, current_id)
-                # Else statement
-                if hasattr(node, 'else_statement') and node.else_statement:
-                    visit(node.else_statement, current_id)
-            
-            elif node_type in ['WhileStatement', 'ForStatement', 'DoStatement']:
-                if hasattr(node, 'body'):
-                    visit(node.body, current_id)
-            
+                then_stmt = getattr(node, 'then_statement', None)
+                else_stmt = getattr(node, 'else_statement', None)
+                if then_stmt:
+                    visit(then_stmt, current_id)
+                if else_stmt:
+                    visit(else_stmt, current_id)
+
+            elif node_type in ('WhileStatement', 'DoStatement'):
+                body = getattr(node, 'body', None)
+                if body:
+                    visit(body, current_id)
+
+            elif node_type in ('ForStatement', 'EnhancedForStatement'):
+                body = getattr(node, 'body', None)
+                if body:
+                    visit(body, current_id)
+
             elif node_type == 'SwitchStatement':
-                if hasattr(node, 'cases'):
-                    for case in node.cases:
-                        visit(case, current_id)
-            
+                for case in (getattr(node, 'cases', []) or []):
+                    visit(case, current_id)
+
             elif node_type == 'TryStatement':
-                if hasattr(node, 'block'):
-                    visit(node.block, current_id)
-                if hasattr(node, 'catches'):
-                    for catch in node.catches:
-                        visit(catch, current_id)
-            
-            elif node_type == 'BlockStatement':
-                if hasattr(node, 'statements'):
-                    for stmt in node.statements:
+                block = getattr(node, 'block', None)
+                if block:
+                    for stmt in (block if isinstance(block, list) else [block]):
                         visit(stmt, current_id)
-            
+                for catch in (getattr(node, 'catches', []) or []):
+                    visit(catch, current_id)
+
+            elif node_type == 'BlockStatement':
+                for stmt in (getattr(node, 'statements', []) or []):
+                    visit(stmt, current_id)
+
             else:
-                # Visit children (generic)
+                # Traversée générique
                 if hasattr(node, 'children'):
                     for child in node.children:
-                        if child:
+                        if child and isinstance(child, javalang.tree.Node):
                             visit(child, current_id)
-            
+
             return current_id
-        
-        # Build CFG starting from method body
-        if hasattr(method_node, 'body') and method_node.body:
-            visit(method_node.body)
-        
+
+        body = getattr(method_node, 'body', None)
+        if body:
+            for stmt in body:
+                visit(stmt)
+
         return cfg
-    
-    def _generate_paths_from_cfg(self, cfg: List[CFGNode], method_name: str) -> List[List[CFGNode]]:
-        """Generate all paths through CFG using DFS"""
-        
+
+    # ------------------------------------------------------------------
+    # DFS pour générer les chemins
+    # ------------------------------------------------------------------
+
+    def _generate_paths(self, cfg: List[CFGNode], method_name: str) -> List[List[CFGNode]]:
         if not cfg:
             return []
-        
-        paths = []
+
+        paths: List[List[int]] = []
         max_depth = 50
-        
-        def dfs(node_id: int, current_path: List[int], visited: Set[int], depth: int):
+
+        def dfs(node_id: int, current: List[int], visited: Set[int], depth: int):
             if depth > max_depth or len(paths) >= self.max_paths:
                 return
-            
             node = cfg[node_id]
-            current_path.append(node_id)
-            
+            current.append(node_id)
             if not node.children:
-                paths.append(current_path.copy())
-                current_path.pop()
-                return
-            
-            if node.is_branch:
+                paths.append(current.copy())
+            elif node.is_branch:
                 for child_id in node.children:
                     if child_id not in visited:
-                        new_visited = visited.copy()
-                        new_visited.add(child_id)
-                        dfs(child_id, current_path, new_visited, depth + 1)
+                        dfs(child_id, current, visited | {child_id}, depth + 1)
             else:
                 for child_id in node.children:
                     if child_id not in visited:
-                        new_visited = visited.copy()
-                        new_visited.add(node_id)
-                        dfs(child_id, current_path, new_visited, depth + 1)
-            
-            current_path.pop()
-        
+                        dfs(child_id, current, visited | {node_id}, depth + 1)
+            current.pop()
+
         dfs(0, [], set(), 0)
-        
-        result_paths = []
-        for path_ids in paths:
-            path_nodes = [cfg[nid] for nid in path_ids]
-            result_paths.append(path_nodes)
-        
-        return result_paths
-    
-    def _path_to_trajectory(self, path: List[CFGNode], method_name: str, path_idx: int) -> Trajectory:
-        """Convert CFG path to Trajectory object"""
-        
+        return [[cfg[nid] for nid in path] for path in paths]
+
+    # ------------------------------------------------------------------
+    # Conversion chemin → Trajectory
+    # ------------------------------------------------------------------
+
+    def _path_to_trajectory(self, path: List[CFGNode], method_name: str, idx: int) -> Trajectory:
         basic_blocks = [node.node_id for node in path]
-        
-        branches = set()
+
+        branches: Set[Tuple[int, int]] = set()
         for i in range(len(path) - 1):
             if path[i].is_branch:
                 branches.add((path[i].node_id, path[i+1].node_id))
-        
-        path_condition = f"{method_name}_path_{path_idx}"
-        
-        constraints = []
-        for node in path:
-            if node.is_branch:
-                constraints.append(f"{node.kind}@{node.location}")
-        
-        cost = len(path)
-        
+
+        constraints = [
+            node.condition
+            for node in path
+            if node.is_branch and node.condition
+        ]
+
+        path_condition = " AND ".join(constraints) if constraints else f"{method_name}_path_{idx}"
+
         return Trajectory(
-            path_id=f"java_{method_name}_path_{path_idx:03d}",
+            path_id=f"java_{method_name}_path_{idx:03d}",
             basic_blocks=basic_blocks,
             path_condition=path_condition,
             branches_covered=branches,
             constraints=constraints,
-            cost=float(cost),
+            cost=float(len(path)),
             is_feasible=True
         )
-
-
-def extract_java_trajectories(source_dir: Path, max_paths: int = 100) -> List[Trajectory]:
-    """Convenience function to extract trajectories from Java code"""
-    extractor = JavaExtractor(max_paths=max_paths)
-    return extractor.extract_paths(source_dir)
