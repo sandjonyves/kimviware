@@ -1,17 +1,13 @@
 """
-JavaScript/TypeScript Extractor — Vraie analyse symbolique par Acorn AST
-=========================================================================
-Chaque trajectoire correspond à UN chemin réel :
-  - Les contraintes contiennent les VRAIES conditions JS/TS
-    (ex: "user === null", "password.length < 8", "i < arr.length")
-  - path_condition est la conjonction logique des conditions du chemin.
+JavaScript/TypeScript Trajectory Extractor using Acorn
+Calls Node.js + acorn via subprocess to parse JS/TS AST
 """
 import json
 import subprocess
 import tempfile
 import textwrap
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Set
 import logging
 from dataclasses import dataclass, field
 
@@ -20,264 +16,256 @@ from kimvieware_shared.models import Trajectory
 logger = logging.getLogger(__name__)
 
 
+import subprocess
+import shutil
+
 @dataclass
 class CFGNode:
-    """Nœud du Control Flow Graph JavaScript."""
+    """Control Flow Graph Node for JavaScript"""
     node_id: int
     kind: str
     location: str
-    condition: str = ""          # VRAIE condition extraite du code JS/TS
     children: List[int] = field(default_factory=list)
     is_branch: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Script Node.js : parse avec Acorn ET sérialise les conditions
-# ---------------------------------------------------------------------------
-
-NODE_SCRIPT = textwrap.dedent("""
-    const acorn = require('acorn');
-    const fs = require('fs');
-
-    const filePath = process.argv[2];
-    const isTS = filePath.endsWith('.ts') || filePath.endsWith('.mts');
-
-    let source;
-    try {
-        source = fs.readFileSync(filePath, 'utf8');
-    } catch(e) {
-        process.stderr.write('READ_ERROR: ' + e.message + '\\n');
-        process.exit(1);
-    }
-
-    // Nettoyage minimal pour TypeScript
-    if (isTS) {
-        source = source
-            .replace(/:\\s*[\\w<>\\[\\]|&,\\s]+(?=[,)=;{])/g, '')
-            .replace(/<[^>]+>/g, '')
-            .replace(/as\\s+\\w+/g, '')
-            .replace(/:\\s*\\w+\\s*(?=\\{)/g, '');
-    }
-
-    const options = {
-        ecmaVersion: 2022,
-        sourceType: 'module',
-        locations: true,
-        allowHashBang: true,
-        allowImportExportEverywhere: true,
-    };
-
-    let ast;
-    try {
-        ast = acorn.parse(source, options);
-    } catch(e) {
-        process.stderr.write('PARSE_ERROR: ' + e.message + '\\n');
-        process.exit(1);
-    }
-
-    // ── Sérialisation des expressions en string lisible ──────────────────
-    function serializeExpr(node) {
-        if (!node) return 'null';
-        switch(node.type) {
-            case 'BinaryExpression':
-            case 'LogicalExpression':
-                return serializeExpr(node.left) + ' ' + node.operator + ' ' + serializeExpr(node.right);
-            case 'UnaryExpression':
-                return node.operator + serializeExpr(node.argument);
-            case 'MemberExpression':
-                return serializeExpr(node.object) + '.' + serializeExpr(node.property);
-            case 'CallExpression':
-                return serializeExpr(node.callee) + '(' +
-                    (node.arguments || []).map(serializeExpr).join(', ') + ')';
-            case 'Identifier':
-                return node.name;
-            case 'Literal':
-                return JSON.stringify(node.value);
-            case 'TemplateLiteral':
-                return '`...`';
-            case 'AssignmentExpression':
-                return serializeExpr(node.left) + ' ' + node.operator + ' ' + serializeExpr(node.right);
-            case 'ConditionalExpression':
-                return serializeExpr(node.test) + ' ? ' + serializeExpr(node.consequent) + ' : ' + serializeExpr(node.alternate);
-            case 'ArrayExpression':
-                return '[' + (node.elements || []).map(serializeExpr).join(', ') + ']';
-            case 'ObjectExpression':
-                return '{...}';
-            case 'NewExpression':
-                return 'new ' + serializeExpr(node.callee) + '(...)';
-            case 'UpdateExpression':
-                return node.prefix ?
-                    node.operator + serializeExpr(node.argument) :
-                    serializeExpr(node.argument) + node.operator;
-            case 'AwaitExpression':
-                return 'await ' + serializeExpr(node.argument);
-            default:
-                return node.type;
-        }
-    }
-
-    function getCondition(node) {
-        switch(node.type) {
-            case 'IfStatement':
-                return serializeExpr(node.test);
-            case 'WhileStatement':
-            case 'DoWhileStatement':
-                return serializeExpr(node.test);
-            case 'ForStatement':
-                return node.test ? serializeExpr(node.test) : 'for_init';
-            case 'ForInStatement':
-                return serializeExpr(node.left) + ' in ' + serializeExpr(node.right);
-            case 'ForOfStatement':
-                return serializeExpr(node.left) + ' of ' + serializeExpr(node.right);
-            case 'SwitchStatement':
-                return 'switch(' + serializeExpr(node.discriminant) + ')';
-            case 'TryStatement':
-                const handler = node.handler;
-                const param = handler && handler.param ? serializeExpr(handler.param) : 'e';
-                return 'try (catch ' + param + ')';
-            case 'ConditionalExpression':
-                return serializeExpr(node.test);
-            default:
-                return '';
-        }
-    }
-
-    // ── Enrichissement de l'AST avec les conditions sérialisées ──────────
-    const BRANCH_TYPES = new Set([
-        'IfStatement', 'WhileStatement', 'DoWhileStatement',
-        'ForStatement', 'ForInStatement', 'ForOfStatement',
-        'SwitchStatement', 'TryStatement', 'ConditionalExpression'
-    ]);
-
-    function enrichAST(node) {
-        if (!node || typeof node !== 'object') return;
-        if (BRANCH_TYPES.has(node.type)) {
-            node._condition = getCondition(node);
-            node._is_branch = true;
-        }
-        for (const key of Object.keys(node)) {
-            if (key.startsWith('_')) continue;
-            const val = node[key];
-            if (Array.isArray(val)) val.forEach(enrichAST);
-            else if (val && typeof val === 'object' && val.type) enrichAST(val);
-        }
-    }
-
-    enrichAST(ast);
-    process.stdout.write(JSON.stringify(ast));
-""")
-
-
-# ---------------------------------------------------------------------------
-# Extracteur principal
-# ---------------------------------------------------------------------------
-
 class JSExtractor:
     """
-    Extrait les chemins d'exécution depuis du code JS/TS avec Acorn.
+    Extract execution paths from JavaScript/TypeScript using Acorn.
 
-    Améliorations vs version précédente :
-      - serializeExpr() dans le script Node.js convertit les AST nodes en strings
-      - _condition contient la vraie condition du code source
-      - path_condition = conjonction logique des conditions du chemin
+    Strategy:
+    1. Write a temporary Node.js script that uses acorn to parse the file
+    2. Call it via subprocess → get AST as JSON
+    3. Build CFG from AST nodes
+    4. DFS to generate all paths
+    5. Convert to Trajectory objects
     """
 
+    # AST node types that create branches
     BRANCH_TYPES = {
-        'IfStatement', 'WhileStatement', 'DoWhileStatement',
-        'ForStatement', 'ForInStatement', 'ForOfStatement',
-        'SwitchStatement', 'TryStatement', 'ConditionalExpression'
+        'IfStatement',
+        'WhileStatement',
+        'ForStatement',
+        'ForInStatement',
+        'ForOfStatement',
+        'DoWhileStatement',
+        'SwitchStatement',
+        'ConditionalExpression',
+        'TryStatement',
+        'CatchClause',
+        'LogicalExpression',    # && / || short-circuit
     }
+
+    # Node.js script template — acorn parses the file and prints AST as JSON
+    NODE_SCRIPT = textwrap.dedent("""
+        const acorn = require('acorn');
+        const fs = require('fs');
+
+        const filePath = process.argv[2];
+        const isTS = filePath.endsWith('.ts') || filePath.endsWith('.mts');
+
+        let source;
+        try {
+            source = fs.readFileSync(filePath, 'utf8');
+        } catch(e) {
+            process.stderr.write('READ_ERROR: ' + e.message + '\\n');
+            process.exit(1);
+        }
+
+        // Strip TypeScript type annotations for .ts files
+        // (acorn doesn't support TS natively — we strip types before parsing)
+        if (isTS) {
+            source = source
+                .replace(/:\\s*[\\w<>\\[\\]|&,\\s]+(?=[,)=;{])/g, '')  // param types
+                .replace(/<[^>]+>/g, '')                                 // generics
+                .replace(/as\\s+\\w+/g, '')                              // type assertions
+                .replace(/:\\s*\\w+\\s*(?=\\{)/g, '');                  // return types
+        }
+
+        const options = {
+            ecmaVersion: 2022,
+            sourceType: 'module',   // handles import/export (.mjs)
+            locations: true,        // include line/col info
+            allowHashBang: true,
+            allowImportExportEverywhere: true,
+        };
+
+        try {
+            const ast = acorn.parse(source, options);
+            process.stdout.write(JSON.stringify(ast));
+        } catch(e) {
+            process.stderr.write('PARSE_ERROR: ' + e.message + '\\n');
+            process.exit(1);
+        }
+    """)
 
     def __init__(self, max_paths: int = 100):
         self.max_paths = max_paths
         self.next_node_id = 0
         self._check_node_and_acorn()
 
+    # ------------------------------------------------------------------
+    # Startup check
+    # ------------------------------------------------------------------
+
     def _check_node_and_acorn(self):
+        # Check node
         try:
-            subprocess.run(['node', '--version'], capture_output=True, timeout=5)
+            result = subprocess.run(
+                ['node', '--version'],
+                capture_output=True, text=True, timeout=5
+            )
+            logger.info(f"✅ Node.js found: {result.stdout.strip()}")
         except FileNotFoundError:
-            raise RuntimeError("Node.js not found")
+            raise RuntimeError("❌ Node.js not found")
+
+        # Check acorn CLI (REAL check)
+        acorn_path = shutil.which("acorn")
+
+        if not acorn_path:
+            raise RuntimeError("❌ acorn CLI not found in PATH")
+
         try:
-            r = subprocess.run(['node', '-e', 'require("acorn")'], capture_output=True, timeout=5)
-            if r.returncode != 0:
-                raise RuntimeError("acorn not found — run: npm install -g acorn")
-        except FileNotFoundError:
-            raise RuntimeError("Node.js not found")
+            result = subprocess.run(
+                [acorn_path, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            logger.info("✅ acorn CLI working")
+        except Exception as e:
+            raise RuntimeError(f"❌ acorn not working: {e}")
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
 
     def extract_paths(self, source_dir: Path) -> List[Trajectory]:
+        """
+        Extract all execution paths from JS/TS source directory.
+
+        Args:
+            source_dir: Directory containing .js / .mjs / .ts files
+
+        Returns:
+            List of Trajectory objects
+        """
         logger.info(f"🔍 Extracting JS/TS paths from {source_dir}")
 
+        # Collect target files
         js_files  = list(source_dir.rglob("*.js"))
         mjs_files = list(source_dir.rglob("*.mjs"))
         ts_files  = list(source_dir.rglob("*.ts"))
 
+        # Ignore node_modules, dist, build, test files
         def _keep(f: Path) -> bool:
-            bad = {'node_modules', 'dist', 'build', '.git', '__pycache__', '.venv', 'coverage'}
-            return (not any(p in f.parts for p in bad)
-                    and 'test' not in f.stem.lower()
-                    and '.min.' not in f.name)
+            bad = {'node_modules', 'dist', 'build', '.git',
+                   '__pycache__', '.venv', 'coverage'}
+            return (
+                not any(p in f.parts for p in bad)
+                and 'test' not in f.stem.lower()
+                and '.min.' not in f.name
+            )
 
         all_files = [f for f in js_files + mjs_files + ts_files if _keep(f)]
+
         if not all_files:
             logger.warning("No JS/TS source files found")
             return []
 
-        logger.info(f"Found {len(all_files)} files after filtering")
+        logger.info(
+            f"Found {len(js_files)} .js, "
+            f"{len(mjs_files)} .mjs, "
+            f"{len(ts_files)} .ts files "
+            f"({len(all_files)} after filtering)"
+        )
+
         all_trajectories = []
 
         for source_file in all_files:
             logger.info(f"Processing {source_file.name}...")
             try:
-                trajs = self._extract_from_file(source_file)
-                all_trajectories.extend(trajs)
-                logger.info(f"  → {len(trajs)} paths extracted")
+                trajectories = self._extract_from_file(source_file)
+                all_trajectories.extend(trajectories)
+                logger.info(f"  → {len(trajectories)} paths extracted")
             except Exception as e:
                 logger.error(f"Error processing {source_file}: {e}")
+                continue
 
         logger.info(f"✅ Total JS/TS paths extracted: {len(all_trajectories)}")
+
         if len(all_trajectories) > self.max_paths:
+            logger.info(f"Limiting to {self.max_paths} paths")
             all_trajectories = all_trajectories[:self.max_paths]
 
         return all_trajectories
 
     # ------------------------------------------------------------------
-    # Parse avec Acorn via subprocess
+    # AST → JSON via subprocess
     # ------------------------------------------------------------------
 
     def _get_ast(self, file_path: Path) -> dict | None:
-        with tempfile.NamedTemporaryFile(suffix='.js', mode='w', delete=False, encoding='utf-8') as tmp:
-            tmp.write(NODE_SCRIPT)
+        """
+        Run the Node.js acorn script on file_path.
+        Returns parsed AST dict, or None on failure.
+        """
+        # Write Node script to a temp file
+        with tempfile.NamedTemporaryFile(
+            suffix='.js', mode='w', delete=False, encoding='utf-8'
+        ) as tmp:
+            tmp.write(self.NODE_SCRIPT)
             tmp_path = tmp.name
 
         try:
             result = subprocess.run(
                 ['node', tmp_path, str(file_path)],
-                capture_output=True, text=True, timeout=30
+                capture_output=True,
+                text=True,
+                timeout=30
             )
+
             if result.returncode != 0:
-                logger.warning(f"acorn error on {file_path.name}: {result.stderr.strip()[:200]}")
+                logger.warning(
+                    f"acorn error on {file_path.name}: "
+                    f"{result.stderr.strip()[:200]}"
+                )
                 return None
+
             return json.loads(result.stdout)
-        except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
-            logger.error(f"Error parsing {file_path.name}: {e}")
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout parsing {file_path.name}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON from acorn for {file_path.name}: {e}")
             return None
         finally:
-            Path(tmp_path).unlink(missing_ok=True)
+            Path(tmp_path).unlink(missing_ok=True)  # clean up temp file
+
+    # ------------------------------------------------------------------
+    # File-level extraction
+    # ------------------------------------------------------------------
 
     def _extract_from_file(self, file_path: Path) -> List[Trajectory]:
+        """Extract paths from a single JS/TS file"""
+
         ast = self._get_ast(file_path)
         if ast is None:
             return []
 
         trajectories = []
+
+        # Collect all function nodes from the AST
         functions = self._find_functions(ast)
         logger.info(f"  Found {len(functions)} functions")
 
         for func in functions:
             func_name = self._get_func_name(func)
+            logger.debug(f"    Analyzing: {func_name}")
+
             cfg = self._build_cfg(func)
-            paths = self._generate_paths(cfg, func_name)
+            paths = self._generate_paths_from_cfg(cfg, func_name)
+
             for i, path in enumerate(paths):
                 traj = self._path_to_trajectory(path, func_name, i)
                 trajectories.append(traj)
@@ -285,12 +273,21 @@ class JSExtractor:
         return trajectories
 
     # ------------------------------------------------------------------
-    # Traversée AST
+    # AST traversal helpers
     # ------------------------------------------------------------------
 
     def _find_functions(self, node: dict) -> List[dict]:
+        """
+        Recursively find all function nodes in the AST.
+        Covers: FunctionDeclaration, FunctionExpression, ArrowFunctionExpression
+        """
         results = []
-        func_types = {'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'}
+        func_types = {
+            'FunctionDeclaration',
+            'FunctionExpression',
+            'ArrowFunctionExpression',
+        }
+
         def walk(n):
             if not isinstance(n, dict):
                 return
@@ -302,37 +299,49 @@ class JSExtractor:
                 elif isinstance(v, list):
                     for item in v:
                         walk(item)
+
         walk(node)
         return results
 
     def _get_func_name(self, func_node: dict) -> str:
-        id_node = func_node.get('id')
-        if id_node:
-            return id_node.get('name', 'anonymous')
+        """Extract function name (or 'anonymous' for arrow/unnamed functions)"""
+        node_type = func_node.get('type', '')
+
+        if node_type == 'FunctionDeclaration':
+            id_node = func_node.get('id')
+            if id_node:
+                return id_node.get('name', 'anonymous')
+
+        if node_type == 'FunctionExpression':
+            id_node = func_node.get('id')
+            if id_node:
+                return id_node.get('name', 'anonymous')
+
         return 'anonymous'
 
     def _get_location(self, node: dict) -> str:
+        """Extract line:col from acorn location info"""
         loc = node.get('loc')
         if loc and 'start' in loc:
             return f"{loc['start']['line']}:{loc['start']['column']}"
         return 'unknown'
 
     # ------------------------------------------------------------------
-    # Construction du CFG avec vraies conditions
+    # CFG construction
     # ------------------------------------------------------------------
 
     def _build_cfg(self, func_node: dict) -> List[CFGNode]:
+        """Build Control Flow Graph from a function's AST node"""
         cfg: List[CFGNode] = []
         self.next_node_id = 0
 
-        def create_node(ast_node: dict, is_branch: bool = False, condition: str = "") -> int:
+        def create_node(ast_node: dict, is_branch: bool = False) -> int:
             node_id = self.next_node_id
             self.next_node_id += 1
             cfg.append(CFGNode(
                 node_id=node_id,
                 kind=ast_node.get('type', 'Unknown'),
                 location=self._get_location(ast_node),
-                condition=condition,
                 children=[],
                 is_branch=is_branch,
             ))
@@ -347,16 +356,15 @@ class JSExtractor:
 
             node_type = node.get('type', '')
             is_branch = node_type in self.BRANCH_TYPES
+            current_id = create_node(node, is_branch)
 
-            # Récupérer la condition sérialisée (ajoutée par le script Node.js)
-            condition = node.get('_condition', '') if is_branch else ''
-
-            current_id = create_node(node, is_branch, condition)
             if parent_id is not None:
                 link(parent_id, current_id)
 
-            # Traversée structurée
+            # --- Structured traversal per node type ---
+
             if node_type == 'IfStatement':
+                # test → consequent → [alternate]
                 visit(node.get('test', {}), current_id)
                 visit(node.get('consequent', {}), current_id)
                 if node.get('alternate'):
@@ -392,12 +400,17 @@ class JSExtractor:
                 for stmt in node.get('body', []):
                     visit(stmt, current_id)
 
-            elif node_type in ('FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'):
+            elif node_type in (
+                'FunctionDeclaration', 'FunctionExpression',
+                'ArrowFunctionExpression'
+            ):
+                # Visit body only (params are not control-flow-relevant here)
                 body = node.get('body')
                 if body:
                     visit(body, current_id)
 
             else:
+                # Generic: visit all dict/list children
                 for v in node.values():
                     if isinstance(v, dict) and v.get('type'):
                         visit(v, current_id)
@@ -408,6 +421,7 @@ class JSExtractor:
 
             return current_id
 
+        # Start from function body
         body = func_node.get('body')
         if body:
             visit(body)
@@ -415,62 +429,83 @@ class JSExtractor:
         return cfg
 
     # ------------------------------------------------------------------
-    # DFS pour générer les chemins
+    # DFS path generation (identical logic to C/Java extractors)
     # ------------------------------------------------------------------
 
-    def _generate_paths(self, cfg: List[CFGNode], func_name: str) -> List[List[CFGNode]]:
+    def _generate_paths_from_cfg(
+        self, cfg: List[CFGNode], func_name: str
+    ) -> List[List[CFGNode]]:
+        """Generate all paths through CFG using DFS"""
         if not cfg:
             return []
 
         paths: List[List[int]] = []
         max_depth = 50
 
-        def dfs(node_id: int, current: List[int], visited: Set[int], depth: int):
+        def dfs(node_id: int, current_path: List[int],
+                visited: Set[int], depth: int):
             if depth > max_depth or len(paths) >= self.max_paths:
                 return
+
             node = cfg[node_id]
-            current.append(node_id)
+            current_path.append(node_id)
+
             if not node.children:
-                paths.append(current.copy())
-            elif node.is_branch:
+                paths.append(current_path.copy())
+                current_path.pop()
+                return
+
+            if node.is_branch:
                 for child_id in node.children:
                     if child_id not in visited:
-                        dfs(child_id, current, visited | {child_id}, depth + 1)
+                        dfs(child_id, current_path,
+                            visited | {child_id}, depth + 1)
             else:
                 for child_id in node.children:
                     if child_id not in visited:
-                        dfs(child_id, current, visited | {node_id}, depth + 1)
-            current.pop()
+                        dfs(child_id, current_path,
+                            visited | {node_id}, depth + 1)
+
+            current_path.pop()
 
         dfs(0, [], set(), 0)
+
         return [[cfg[nid] for nid in path] for path in paths]
 
     # ------------------------------------------------------------------
-    # Conversion chemin → Trajectory
+    # Path → Trajectory
     # ------------------------------------------------------------------
 
-    def _path_to_trajectory(self, path: List[CFGNode], func_name: str, idx: int) -> Trajectory:
+    def _path_to_trajectory(
+        self, path: List[CFGNode], func_name: str, path_idx: int
+    ) -> Trajectory:
+        """Convert a CFG path to a Trajectory object"""
         basic_blocks = [node.node_id for node in path]
 
-        branches: Set[Tuple[int, int]] = set()
+        branches: Set[tuple] = set()
         for i in range(len(path) - 1):
             if path[i].is_branch:
-                branches.add((path[i].node_id, path[i+1].node_id))
+                branches.add((path[i].node_id, path[i + 1].node_id))
 
         constraints = [
-            node.condition
-            for node in path
-            if node.is_branch and node.condition
+            f"{node.kind}@{node.location}"
+            for node in path if node.is_branch
         ]
 
-        path_condition = " AND ".join(constraints) if constraints else f"{func_name}_path_{idx}"
-
         return Trajectory(
-            path_id=f"js_{func_name}_path_{idx:03d}",
+            path_id=f"js_{func_name}_path_{path_idx:03d}",
             basic_blocks=basic_blocks,
-            path_condition=path_condition,
+            path_condition=f"{func_name}_path_{path_idx}",
             branches_covered=branches,
             constraints=constraints,
             cost=float(len(path)),
             is_feasible=True
         )
+
+
+def extract_js_trajectories(
+    source_dir: Path, max_paths: int = 100
+) -> List[Trajectory]:
+    """Convenience function to extract trajectories from JS/TS code"""
+    extractor = JSExtractor(max_paths=max_paths)
+    return extractor.extract_paths(source_dir)
