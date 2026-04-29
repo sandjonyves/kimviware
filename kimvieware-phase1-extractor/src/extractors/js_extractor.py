@@ -16,6 +16,9 @@ from kimvieware_shared.models import Trajectory
 logger = logging.getLogger(__name__)
 
 
+import subprocess
+import shutil
+
 @dataclass
 class CFGNode:
     """Control Flow Graph Node for JavaScript"""
@@ -106,7 +109,6 @@ class JSExtractor:
     # ------------------------------------------------------------------
 
     def _check_node_and_acorn(self):
-        """Verify that node and acorn are available"""
         # Check node
         try:
             result = subprocess.run(
@@ -115,22 +117,24 @@ class JSExtractor:
             )
             logger.info(f"✅ Node.js found: {result.stdout.strip()}")
         except FileNotFoundError:
-            raise RuntimeError("❌ Node.js not found. Install it: https://nodejs.org")
+            raise RuntimeError("❌ Node.js not found")
 
-        # Check acorn
+        # Check acorn CLI (REAL check)
+        acorn_path = shutil.which("acorn")
+
+        if not acorn_path:
+            raise RuntimeError("❌ acorn CLI not found in PATH")
+
         try:
             result = subprocess.run(
-                ['node', '-e', 'require("acorn"); console.log("ok")'],
-                capture_output=True, text=True, timeout=5
+                [acorn_path, "--help"],
+                capture_output=True,
+                text=True,
+                timeout=5
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    "❌ acorn not found. Install it: npm install -g acorn  "
-                    "or: npm install acorn  (in your project)"
-                )
-            logger.info("✅ acorn available")
-        except FileNotFoundError:
-            raise RuntimeError("❌ Node.js not found")
+            logger.info("✅ acorn CLI working")
+        except Exception as e:
+            raise RuntimeError(f"❌ acorn not working: {e}")
 
     # ------------------------------------------------------------------
     # Public entry point
